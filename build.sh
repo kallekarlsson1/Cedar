@@ -4,7 +4,7 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 app="$HOME/Applications/Cedar.app"
 
-(cd "$here/engine" && CMAKE_ARGS="-DGGML_METAL=on" uv sync --quiet)   # compiles llama.cpp the first time
+[ -f "$here/app/Vendor/llama/lib/libllama.a" ] || "$here/scripts/build-llama.sh"   # compiles llama.cpp the first time
 (cd "$here/app" && swift build -c release)
 
 rm -rf "$app"
@@ -25,7 +25,6 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
-    <key>CedarEngineDir</key><string>$here/engine</string>
 </dict>
 </plist>
 PLIST

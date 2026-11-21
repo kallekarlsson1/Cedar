@@ -15,10 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .appendingPathComponent("Cedar")
         try? FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
 
-        // Where the engine lives: written into Info.plist by build.sh, or next to the app's sources in development.
-        let engineDir = Bundle.main.object(forInfoDictionaryKey: "CedarEngineDir") as? String
-            ?? NSHomeDirectory() + "/Cedar/engine"
-        engine = EngineClient(dataDir: data, engineDir: engineDir)
+        engine = EngineClient(dataDir: data)
         engine.startIfNeeded()
 
         search = SearchController(engine: engine, apps: Apps(), converter: Converter(dataDir: data),
@@ -142,10 +139,44 @@ if CommandLine.arguments.count > 2, CommandLine.arguments[1] == "--try" {
     exit(0)
 }
 
+// `Cedar --search "halvorsen plural"` and `Cedar --status`: ask the running engine from a terminal.
+if CommandLine.arguments.count > 1, ["--search", "--status"].contains(CommandLine.arguments[1]) {
+    let client = EngineClient(dataDir: Config.data)
+    var done = false
+    if CommandLine.arguments[1] == "--status" {
+        client.status { s in
+            if let s { print("\(s.state): \(s.names) files, \(s.documents) documents, \(s.vectors) passages understood, \(s.to_embed) to go") }
+            else { print("the engine isn't running") }
+            done = true
+        }
+    } else {
+        let q = CommandLine.arguments.dropFirst(2).joined(separator: " ")
+        client.search(q, deep: true) { a in
+            guard let a else { print("the engine isn't running"); done = true; return }
+            print("\(a.ms) ms")
+            for d in a.docs { print("  \(d.title ?? (d.path as NSString).lastPathComponent)\(d.page.map { "  p.\($0)" } ?? "")\n      \(Paths.short(d.path))") }
+            for f in a.files.prefix(6) { print("  \(Paths.short(f.path))") }
+            done = true
+        }
+    }
+    while !done { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+    exit(0)
+}
+
+// `Cedar --model file`: the helper process that holds the model.
+if CommandLine.arguments.count > 2, CommandLine.arguments[1] == "--model" {
+    ModelClient.serve(modelPath: CommandLine.arguments[2])
+}
+
+// `Cedar --engine`: the indexes and search, serving the panel over a socket.
+if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "--engine" {
+    do { try Engine().run() } catch { logLine("engine failed to start: \(error)"); exit(1) }
+}
+
 // `Cedar --eval corpus queries.json [--words-only]`: the search-quality check on the Swift engine.
 if CommandLine.arguments.count > 3, CommandLine.arguments[1] == "--eval" {
     let wordsOnly = CommandLine.arguments.contains("--words-only")
-    let model = ProcessInfo.processInfo.environment["CEDAR_MODEL"] ?? Config.modelPath
+    let model = ProcessInfo.processInfo.environment["CEDAR_MODEL"] ?? ModelClient.modelFile()
     do {
         let ok = try Eval.run(corpus: CommandLine.arguments[2], queries: CommandLine.arguments[3], modelPath: wordsOnly ? nil : model)
         fflush(stdout); _exit(ok ? 0 : 1)
@@ -190,7 +221,7 @@ if CommandLine.arguments.count > 3, CommandLine.arguments[1] == "--snapshot" {
     app.setActivationPolicy(.accessory)
     let data = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("Cedar")
-    let engine = EngineClient(dataDir: data, engineDir: NSHomeDirectory() + "/Cedar/engine")
+    let engine = EngineClient(dataDir: data)
     let apps = Apps()
     RunLoop.main.run(until: Date().addingTimeInterval(0.5))
     let search = SearchController(engine: engine, apps: apps, converter: Converter(dataDir: data), usage: Usage(dataDir: data))

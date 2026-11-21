@@ -21,36 +21,36 @@ separately from its body and its reference list, and ranks them in that order. I
 
 ## How it works
 
+One binary, three roles (all Swift; no Python, nothing to install besides the app):
+
 ```
-Cedar.app (Swift, AppKit)          the panel: apps, math, conversions in-process; asks the engine for the rest
+Cedar            the panel: apps, math and conversions in-process; asks the engine for the rest
    │ unix socket (yours only)
-engine, search process (Python)   keyword + meaning search; ~80 MB
-engine, reader process            lists files, reads documents, follows changes (FSEvents), at low priority
-engine, model process             Qwen3-Embedding (8-bit) on llama.cpp + Metal, ~450 MB; embeds passages while
-                                  you're not searching, quits after 2 idle minutes, back in 0.4 s
-   │
+Cedar --engine   lists files, reads documents, follows changes (FSEvents) and answers searches; ~90 MB
+   │ pipe
+Cedar --model    Qwen3-Embedding (8-bit) on llama.cpp + Metal, ~220 MB; embeds passages while you're not
+                 searching, quits after 2 idle minutes, back in under a second
+
 ~/Library/Application Support/Cedar/
    names.db     every file and folder name; trigram index for all but dataset folders' files, which are
                 found by the start of their name. After the first listing, a start reads only changed folders
-   content.db   passages with page numbers, FTS5 keyword index, Qwen3-Embedding-0.6B vectors
+   content.db   passages with page numbers, FTS5 keyword index, one vector per passage
 ```
 
-- **Reading.** Each document is split into a title/author block (`head`), overlapping ~200-word passages
-  (`body`, with page numbers) and its reference list (`refs`).
+- **Reading.** PDFs through PDFKit, Word and RTF through macOS's own import, PowerPoint and Excel through unzip,
+  scanned pages through Vision. Each document is split into a title/author block (`head`), overlapping
+  ~200-word passages (`body`, with page numbers) and its reference list (`refs`).
 - **Words.** SQLite FTS5 with Porter stemming. A query word counts by where it's found (file name and title
   block 1.0, body 0.5, references 0.12) and by how rare it is. Common words are left out.
-- **Meaning.** [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF), 8-bit, runs on the
-  Mac's GPU through llama.cpp.
-  For each query, every passage's cosine score is turned into a z-score. A document counts as a meaning match
-  only when one of its passages stands out (z ≥ 2.5), so a search can honestly come back empty. All vectors are
-  compared directly in memory, with no vector database.
-- **Light on the machine.** On battery only titles and first pages are embedded; the rest waits for the charger.
-  Vectors are float16 in memory and leave it, with the model, when Cedar is idle (~180 MB then).
-- **Order of work.** The keyword index of everything is built first, in about a minute. Embedding then covers
-  every document's title block and first pages, newest first, before the rest. Text files that copy a PDF are
-  searched by their words but not embedded a second time.
-- **Privacy.** Nothing about your files leaves the computer. Cedar goes online for two things only: the
-  one-time model download and the daily exchange rates. Neither request carries anything you type or store.
+- **Meaning.** [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF), 8-bit, on the Mac's
+  GPU through llama.cpp, linked into the binary. For each query every passage's cosine is turned into a z-score;
+  a document is a meaning match only when a passage stands out (z ≥ 2) and is close in absolute terms
+  (cosine ≥ 0.42), so a search can honestly come back empty. All vectors are compared directly in memory.
+- **Light on the machine.** On battery only titles and first pages are embedded; the rest, and text recognition,
+  wait for the charger. Vectors are float16 in memory and leave it, with the model, when Cedar is idle.
+- **Order of work.** The keyword index of everything is built first. Embedding then covers every document's
+  title block and first pages, newest first, before the rest. Text files that copy a PDF are searched by their
+  words but not embedded a second time, and identical passages share one embedding.
 
 ## Private by design
 
@@ -61,28 +61,28 @@ exchange rates. Files that are only in iCloud are listed by name and never downl
 
 ## Checking search quality
 
-`evals/` holds a small made-up library (papers that cite each other, notes, a duplicate, a scan) and queries with
-the files they should find. Run it before and after any change to ranking:
+`evals/corpus.noindex` is a small made-up library (papers that cite each other, notes, a duplicate, a scan) and
+`evals/queries.json` lists queries with the files they should find. Run it before and after any change to ranking:
 
 ```sh
-cd engine
-CEDAR_APP=~/Applications/Cedar.app/Contents/MacOS/Cedar .venv/bin/python ../evals/run.py   # the full check, with the model
-uv run --with pytest pytest -q                                                          # fast tests, no model
+scripts/check.sh                # the full check, with the model
+scripts/check.sh --words-only   # fast, no model
 ```
 
 ## Build
 
-Needs macOS 14+, Apple Silicon, the Xcode Command Line Tools and [uv](https://docs.astral.sh/uv/).
+Needs an Apple Silicon Mac with macOS 14+, the Xcode Command Line Tools, git, and cmake (or
+[uv](https://docs.astral.sh/uv/), which can run cmake).
 
 ```sh
-./build.sh          # installs ~/Applications/Cedar.app
+./build.sh          # builds llama.cpp the first time, then installs ~/Applications/Cedar.app
 open ~/Applications/Cedar.app
 ```
 
 Then turn off Spotlight's shortcut in System Settings → Keyboard → Keyboard Shortcuts → Spotlight, so ⌘Space reaches
 Cedar. You can pick another shortcut from Cedar's menu bar icon instead.
 
-Search from the terminal: `cd engine && .venv/bin/python -m cedar_engine.ask "halvorsen plural llm"`.
+From a terminal: `Cedar.app/Contents/MacOS/Cedar --search "halvorsen plural llm"` and `--status`.
 
 ## Keys
 

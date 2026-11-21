@@ -21,4 +21,5 @@ rm -rf "$out"; mkdir -p "$out/lib" "$out/include"
 find "$src/build" -name "*.a" -exec cp {} "$out/lib/" \;
 cp "$src/include/llama.h" "$src"/ggml/include/*.h "$out/include/"
 echo "$TAG" > "$out/TAG"
+rm -rf "$src"        # only the libraries and headers are needed from here on
 ls "$out/lib"

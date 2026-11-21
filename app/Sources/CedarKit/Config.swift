@@ -67,7 +67,9 @@ public enum Config {
     public static func ext(_ path: String) -> String { (path as NSString).pathExtension.lowercased() }
 
     public static func skipDir(path: String, name: String) -> Bool {
-        name.hasPrefix(".") || skipNames.contains(name) || skipPaths.contains(path) || packages.contains(ext(name))
+        // (".noindex" folders are skipped by macOS convention: Spotlight leaves them alone too.)
+        name.hasPrefix(".") || name.hasSuffix(".noindex") || skipNames.contains(name) || skipPaths.contains(path)
+            || packages.contains(ext(name))
     }
 
     /// True for a file that's only in iCloud (not downloaded). Its name is searchable; its contents are never read,
@@ -105,7 +107,9 @@ public enum Config {
 
 /// A line in the engine's log file.
 public func logLine(_ text: String) {
-    let stamp = ISO8601DateFormatter().string(from: Date())
+    let format = DateFormatter()
+    format.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    let stamp = format.string(from: Date())
     let line = "\(stamp) \(ProcessInfo.processInfo.processIdentifier) \(text)\n"
     FileHandle.standardError.write(line.data(using: .utf8)!)
     if let handle = FileHandle(forWritingAtPath: Config.log) ?? {

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Talks to the Python engine over its private socket, and starts it when it isn't running.
+/// Talks to the engine (this binary run with `--engine`) over its private socket, and starts it when it isn't running.
 final class EngineClient {
     struct Doc: Decodable {
         let path: String
@@ -25,14 +25,12 @@ final class EngineClient {
     }
 
     let socketPath: String
-    let engineDir: String
     private var process: Process?
     private var restarts = 0
     private let queue = DispatchQueue(label: "cedar.engine", qos: .userInteractive, attributes: .concurrent)
 
-    init(dataDir: URL, engineDir: String) {
+    init(dataDir: URL) {
         socketPath = dataDir.appendingPathComponent("engine.sock").path
-        self.engineDir = engineDir
     }
 
     // MARK: running the engine
@@ -45,24 +43,14 @@ final class EngineClient {
     }
 
     private func launch() {
-        let python = engineDir + "/.venv/bin/python"
-        guard FileManager.default.isExecutableFile(atPath: python) else {
-            NSLog("Cedar: no engine at \(python)")
-            return
-        }
+        guard let binary = Bundle.main.executablePath else { return }
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: python)
-        p.arguments = ["-m", "cedar_engine"]
-        p.currentDirectoryURL = URL(fileURLWithPath: engineDir)
-        // Searches wait on this process: keep it out of App Nap and off the efficiency cores (as DigUp does).
-        p.qualityOfService = .userInitiated
+        p.executableURL = URL(fileURLWithPath: binary)      // the engine is this same binary, in another mode
+        p.arguments = ["--engine"]
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
-        var env = ProcessInfo.processInfo.environment
-        env["PYTHONUNBUFFERED"] = "1"
-        env["CEDAR_APP"] = Bundle.main.executablePath ?? ""     // the engine calls back for `--ocr`
-        env["TOKENIZERS_PARALLELISM"] = "false"
-        p.environment = env
+        // Searches wait on this process: keep it out of App Nap and off the efficiency cores.
+        p.qualityOfService = .userInitiated
         p.terminationHandler = { [weak self] proc in
             guard let self, proc.terminationReason != .uncaughtSignal || proc.terminationStatus != SIGTERM else { return }
             // Came down on its own: start it again, but don't loop on a broken install.
