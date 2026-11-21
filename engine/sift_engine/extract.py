@@ -134,14 +134,29 @@ def _plain(path: Path, text: str) -> Document:
     title = None
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     if lines:
-        first = lines[0].lstrip("#").strip()
-        if path.suffix.lower() in (".md", ".markdown", ".org", ".rst") and 2 < len(first) < 200:
-            title = first
-        passages.append(Passage("head", None, _squash("\n".join(lines[:8]))[:1500]))
+        if path.suffix.lower() in (".md", ".markdown", ".org", ".rst"):
+            title = md_title(text)
+        # The head keeps a note's metadata block: its author: and aliases: lines are what you'd search for.
+        passages.append(Passage("head", None, _squash("\n".join(lines[:12]))[:1500]))
     passages += [Passage("body", None, t) for t in _windows(text)]
     # A text copy of a PDF ("paper.pdf.txt") is found by its words; its PDF carries the meaning.
     embed = not path.name.lower().endswith(".pdf.txt") and _wordy(passages)
     return Document(title, None, passages, embed=embed)
+
+
+def md_title(text: str) -> str | None:
+    """A note's title: `title:` in its metadata block, else its first heading. None: show the file name."""
+    body = text
+    m = re.match(r"\A---\s*\n(.*?)\n---\s*(\n|\Z)", text, re.S)
+    if m:
+        t = re.search(r"^title:\s*[\"']?(.+?)[\"']?\s*$", m.group(1), re.M)
+        if t and 2 < len(t.group(1)) < 200:
+            return t.group(1)
+        body = text[m.end():]
+    h = re.search(r"^#{1,3}\s+(.+?)\s*#*\s*$", body, re.M)
+    if h and 2 < len(h.group(1)) < 200:
+        return h.group(1)
+    return None
 
 
 def _office(path: Path, ext: str) -> str:

@@ -141,6 +141,17 @@ if CommandLine.arguments.count > 2, CommandLine.arguments[1] == "--try" {
 }
 
 let app = NSApplication.shared
+if CommandLine.arguments.count > 3, CommandLine.arguments[1] == "--snapshot" {
+    app.setActivationPolicy(.accessory)
+    let data = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Sift")
+    let engine = EngineClient(dataDir: data, engineDir: NSHomeDirectory() + "/Sift/engine")
+    let apps = Apps()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+    let search = SearchController(engine: engine, apps: apps, converter: Converter(dataDir: data), usage: Usage(dataDir: data))
+    search.debugSnapshot(CommandLine.arguments[2], to: CommandLine.arguments[3])
+    exit(0)
+}
 let delegate = AppDelegate()
 app.delegate = delegate
 app.setActivationPolicy(.accessory)

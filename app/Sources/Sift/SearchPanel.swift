@@ -44,6 +44,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
     private var deepWork: DispatchWorkItem?
     private var keyMonitor: Any?
     private var navigated = false      // moved through results since the last keystroke: Space previews
+    private var bodyHeight: NSLayoutConstraint!   // the results area; the window's height follows it
 
     private let width: CGFloat = 760
     private let barHeight: CGFloat = 56
@@ -125,6 +126,8 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
         line.translatesAutoresizingMaskIntoConstraints = false
 
         for v in [glass, field, divider, scroll, line, detail] { background.addSubview(v) }
+        // Without a set height, Auto Layout shrinks the window to the smallest size its contents allow (just the bar).
+        bodyHeight = scroll.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             glass.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 18),
             glass.centerYAnchor.constraint(equalTo: background.topAnchor, constant: barHeight / 2),
@@ -138,6 +141,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
             scroll.leadingAnchor.constraint(equalTo: background.leadingAnchor),
             scroll.widthAnchor.constraint(equalToConstant: listWidth),
             scroll.bottomAnchor.constraint(equalTo: background.bottomAnchor),
+            bodyHeight,
             line.topAnchor.constraint(equalTo: divider.bottomAnchor),
             line.bottomAnchor.constraint(equalTo: background.bottomAnchor),
             line.leadingAnchor.constraint(equalTo: scroll.trailingAnchor),
@@ -150,6 +154,27 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
 
         NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: panel, queue: .main) {
             [weak self] _ in self?.hide()
+        }
+    }
+
+    // MARK: testing
+
+    /// Types `query` into the panel, waits for the answers, and saves a picture of the panel with layout facts:
+    /// `Sift --snapshot "query" out.png`.
+    func debugSnapshot(_ query: String, to path: String) {
+        show()
+        field.stringValue = query
+        run(query)
+        RunLoop.main.run(until: Date().addingTimeInterval(2.0))
+        print("items:", items.count, "rows:", table.numberOfRows, "selected:", table.selectedRow)
+        print("panel:", panel.frame, "visible:", panel.isVisible, "key:", panel.isKeyWindow)
+        print("scroll:", scroll.frame, "hidden:", scroll.isHidden, "table:", table.frame, "clip:", scroll.contentView.bounds)
+        print("detail:", detail.frame, "hidden:", detail.isHidden, "column width:", table.tableColumns.first?.width ?? -1)
+        if table.numberOfRows > 0 { print("row 0 rect:", table.rect(ofRow: 0), "view:", table.view(atColumn: 0, row: 0, makeIfNecessary: true)?.frame ?? .zero) }
+        for (i, item) in items.prefix(8).enumerated() { print("  ", i, item) }
+        if let view = panel.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
         }
     }
 
@@ -183,13 +208,15 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
     private func resize() {
         let rows = items.reduce(CGFloat(0)) { $0 + rowHeight($1) }
         let body = items.isEmpty ? 0 : min(max(rows, 260), maxBody)
-        let height = barHeight + body
+        bodyHeight.constant = body
+        divider.isHidden = items.isEmpty
+        let height = barHeight + 1 + body        // the bar, the divider line, the results
         var frame = panel.frame
         let top = frame.maxY
         frame.size = NSSize(width: width, height: height)
-        frame.origin.y = top - height
+        frame.origin.y = top - height          // grow downwards from the bar
         panel.setFrame(frame, display: true)
-        divider.isHidden = items.isEmpty
+        panel.contentView?.layoutSubtreeIfNeeded()
     }
 
     // MARK: searching
