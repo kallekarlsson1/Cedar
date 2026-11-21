@@ -22,7 +22,7 @@ from . import config
 DIM = 1024
 MAX_TOKENS = 512
 QUERY_PROMPT = "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:"
-log = logging.getLogger("sift")
+log = logging.getLogger("cedar")
 
 
 def model_file() -> str:

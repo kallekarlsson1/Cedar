@@ -1,9 +1,9 @@
 """Builds an index of the made-up library and checks that searches find what they should.
 
-    cd engine && SIFT_APP=~/Applications/Sift.app/Contents/MacOS/Sift .venv/bin/python ../evals/run.py [--words-only]
+    cd engine && CEDAR_APP=~/Applications/Cedar.app/Contents/MacOS/Cedar .venv/bin/python ../evals/run.py [--words-only]
 
 Prints a table per kind of query and exits 1 when a kind falls below its bar. With --words-only the model isn't
-loaded and meaning queries are skipped (fast: for the tests). The scan queries need SIFT_APP (text recognition).
+loaded and meaning queries are skipped (fast: for the tests). The scan queries need CEDAR_APP (text recognition).
 """
 
 import json
@@ -14,18 +14,18 @@ import time
 from pathlib import Path
 
 here = Path(__file__).resolve().parent
-if "SIFT_EVAL_DIR" not in os.environ:      # (the model's helper process imports this file again)
-    os.environ["SIFT_EVAL_DIR"] = tempfile.mkdtemp(prefix="sift-eval-")
-tmp = Path(os.environ["SIFT_EVAL_DIR"])
-os.environ["SIFT_DATA"] = str(tmp / "index")
-os.environ["SIFT_ROOTS"] = str(tmp / "corpus")
+if "CEDAR_EVAL_DIR" not in os.environ:      # (the model's helper process imports this file again)
+    os.environ["CEDAR_EVAL_DIR"] = tempfile.mkdtemp(prefix="cedar-eval-")
+tmp = Path(os.environ["CEDAR_EVAL_DIR"])
+os.environ["CEDAR_DATA"] = str(tmp / "index")
+os.environ["CEDAR_ROOTS"] = str(tmp / "corpus")
 sys.path.insert(0, str(here.parent / "engine"))
 sys.path.insert(0, str(here))
 
 import make_corpus  # noqa: E402
-from sift_engine import config  # noqa: E402
-from sift_engine.content import Content  # noqa: E402
-from sift_engine.embed import Embedder  # noqa: E402
+from cedar_engine import config  # noqa: E402
+from cedar_engine.content import Content  # noqa: E402
+from cedar_engine.embed import Embedder  # noqa: E402
 
 # Share of queries whose expected file must come first / in the first three.
 BARS = {"author": (0.8, 1.0), "title": (1.0, 1.0), "typing": (1.0, 1.0), "exact": (1.0, 1.0), "words": (1.0, 1.0),
@@ -56,7 +56,7 @@ def run(content: Content, words_only: bool) -> bool:
         tag = item["tag"]
         if words_only and tag in ("meaning", "nothing"):
             continue
-        if tag == "scan" and not os.environ.get("SIFT_APP"):
+        if tag == "scan" and not os.environ.get("CEDAR_APP"):
             continue
         hits = [Path(h["path"]).name for h in content.search(item["q"], deep=not words_only)]
         if tag == "nothing":

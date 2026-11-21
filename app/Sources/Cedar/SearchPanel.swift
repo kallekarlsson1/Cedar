@@ -125,7 +125,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
         field.drawsBackground = false
         field.focusRingType = .none
         field.font = .systemFont(ofSize: 25, weight: .regular)
-        field.placeholderString = "Sift Search"
+        field.placeholderString = "Cedar Search"
         field.delegate = self
         field.cell?.isScrollable = true
         field.cell?.wraps = false
@@ -199,7 +199,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
     // MARK: testing
 
     /// Types `query` into the panel, waits for the answers, and saves a picture of the panel:
-    /// `Sift --snapshot "query" out.png [row]`.
+    /// `Cedar --snapshot "query" out.png [row]`.
     func debugSnapshot(_ query: String, to path: String, row: Int? = nil) {
         show()
         field.stringValue = query
@@ -758,7 +758,7 @@ final class DetailView: NSView {
 
     /// The page that matched, drawn with the words you typed highlighted.
     private var document: (path: String, doc: PDFDocument)?
-    private let renderQueue = DispatchQueue(label: "sift.pdf", qos: .userInitiated)
+    private let renderQueue = DispatchQueue(label: "cedar.pdf", qos: .userInitiated)
 
     private func showPDF(_ path: String, page: Int?, query: String) {
         use(.pdf)

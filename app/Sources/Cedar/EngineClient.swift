@@ -28,7 +28,7 @@ final class EngineClient {
     let engineDir: String
     private var process: Process?
     private var restarts = 0
-    private let queue = DispatchQueue(label: "sift.engine", qos: .userInteractive, attributes: .concurrent)
+    private let queue = DispatchQueue(label: "cedar.engine", qos: .userInteractive, attributes: .concurrent)
 
     init(dataDir: URL, engineDir: String) {
         socketPath = dataDir.appendingPathComponent("engine.sock").path
@@ -47,12 +47,12 @@ final class EngineClient {
     private func launch() {
         let python = engineDir + "/.venv/bin/python"
         guard FileManager.default.isExecutableFile(atPath: python) else {
-            NSLog("Sift: no engine at \(python)")
+            NSLog("Cedar: no engine at \(python)")
             return
         }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: python)
-        p.arguments = ["-m", "sift_engine"]
+        p.arguments = ["-m", "cedar_engine"]
         p.currentDirectoryURL = URL(fileURLWithPath: engineDir)
         // Searches wait on this process: keep it out of App Nap and off the efficiency cores (as DigUp does).
         p.qualityOfService = .userInitiated
@@ -60,7 +60,7 @@ final class EngineClient {
         p.standardError = FileHandle.nullDevice
         var env = ProcessInfo.processInfo.environment
         env["PYTHONUNBUFFERED"] = "1"
-        env["SIFT_APP"] = Bundle.main.executablePath ?? ""     // the engine calls back for `--ocr`
+        env["CEDAR_APP"] = Bundle.main.executablePath ?? ""     // the engine calls back for `--ocr`
         env["TOKENIZERS_PARALLELISM"] = "false"
         p.environment = env
         p.terminationHandler = { [weak self] proc in
@@ -76,7 +76,7 @@ final class EngineClient {
             try p.run()
             process = p
         } catch {
-            NSLog("Sift: can't start engine: \(error)")
+            NSLog("Cedar: can't start engine: \(error)")
         }
     }
 

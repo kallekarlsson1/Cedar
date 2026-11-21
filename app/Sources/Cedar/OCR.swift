@@ -3,7 +3,7 @@ import PDFKit
 import Vision
 
 /// Reads the text of scanned PDF pages with Apple's on-device text recognition (Vision). Nothing leaves the Mac.
-/// The engine calls it as `Sift --ocr file.pdf 1,2,5` and gets {"1": "text of page 1", ...} on stdout.
+/// The engine calls it as `Cedar --ocr file.pdf 1,2,5` and gets {"1": "text of page 1", ...} on stdout.
 enum OCR {
     static func run(path: String, pages: [Int]) -> [String: String] {
         guard let doc = PDFDocument(url: URL(fileURLWithPath: path)) else { return [:] }

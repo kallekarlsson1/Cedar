@@ -83,7 +83,7 @@ def _pdf(path: Path) -> Document | None:
     # Scanned pages have no text of their own: Apple's on-device text recognition reads them.
     pending = False
     blank = [i + 1 for i, t in enumerate(pages) if len(t.strip()) < 30][:OCR_PAGE_LIMIT]
-    if blank and os.environ.get("SIFT_APP"):
+    if blank and os.environ.get("CEDAR_APP"):
         if config.on_battery():
             pending = len(blank) > len(pages) * 0.5     # a scan; it's read when the charger is in
         else:
@@ -123,7 +123,7 @@ OCR_PAGE_LIMIT = 400
 
 def ocr(path: str, pages: list[int]) -> dict[int, str]:
     """Text of scanned pages, from the app's `--ocr` mode (Vision, on this Mac). About 1.5 s a page."""
-    app = os.environ.get("SIFT_APP")
+    app = os.environ.get("CEDAR_APP")
     out: dict[int, str] = {}
     if not app:
         return out

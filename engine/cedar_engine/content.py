@@ -240,14 +240,14 @@ class Content:
 
     def read_scans(self, log=print) -> int:
         """Reads again the PDFs whose scanned pages were waiting for the charger, and once, the scans indexed
-        before Sift could read them."""
+        before Cedar could read them."""
         with self.db as db:
             if not db.execute("SELECT 1 FROM meta WHERE key = 'ocr'").fetchone():
                 db.execute("""UPDATE docs SET state = 'ocr' WHERE lower(path) LIKE '%.pdf' AND pages > 0 AND
                     (SELECT COUNT(DISTINCT page) FROM chunks c WHERE c.doc = docs.id AND c.region IN ('body', 'refs'))
                     < pages * 0.5""")
                 db.execute("INSERT INTO meta(key, value) VALUES('ocr', '1')")
-        if config.on_battery() or not os.environ.get("SIFT_APP"):
+        if config.on_battery() or not os.environ.get("CEDAR_APP"):
             return 0
         rows = self.db.execute("SELECT path, mtime, size FROM docs WHERE state = 'ocr'").fetchall()
         for path, mtime, size in rows:

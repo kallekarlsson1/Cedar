@@ -3,9 +3,9 @@ import PackageDescription
 
 // The search panel. Plain AppKit, so it builds with the Command Line Tools alone (no Xcode).
 let package = Package(
-    name: "Sift",
+    name: "Cedar",
     platforms: [.macOS(.v14)],
     targets: [
-        .executableTarget(name: "Sift", path: "Sources/Sift"),
+        .executableTarget(name: "Cedar", path: "Sources/Cedar"),
     ]
 )

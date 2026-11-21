@@ -11,12 +11,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let data = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Sift")
+            .appendingPathComponent("Cedar")
         try? FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
 
         // Where the engine lives: written into Info.plist by build.sh, or next to the app's sources in development.
-        let engineDir = Bundle.main.object(forInfoDictionaryKey: "SiftEngineDir") as? String
-            ?? NSHomeDirectory() + "/Sift/engine"
+        let engineDir = Bundle.main.object(forInfoDictionaryKey: "CedarEngineDir") as? String
+            ?? NSHomeDirectory() + "/Cedar/engine"
         engine = EngineClient(dataDir: data, engineDir: engineDir)
         engine.startIfNeeded()
 
@@ -37,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let saved = UserDefaults.standard.integer(forKey: "shortcut")
         let combo = Hotkey.choices[min(max(saved, 0), Hotkey.choices.count - 1)]
         if !hotkey.register(combo) {
-            NSLog("Sift: \(combo.label) is taken by another app")
+            NSLog("Cedar: \(combo.label) is taken by another app")
         }
     }
 
@@ -51,10 +51,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func buildMenu() {
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        status.button?.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Sift")
+        status.button?.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Cedar")
         let menu = NSMenu()
         menu.delegate = self
-        menu.addItem(withTitle: "Open Sift", action: #selector(openPanel), keyEquivalent: "")
+        menu.addItem(withTitle: "Open Cedar", action: #selector(openPanel), keyEquivalent: "")
         menu.addItem(.separator())
         statusLine.isEnabled = false
         menu.addItem(statusLine)
@@ -66,7 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         login.tag = 99
         menu.addItem(login)
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit Sift", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(withTitle: "Quit Cedar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         for item in menu.items where item.action != nil { item.target = item.action == #selector(NSApplication.terminate(_:)) ? nil : self }
         status.menu = menu
         updateShortcutMenu()
@@ -118,15 +118,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister() }
             else { try SMAppService.mainApp.register() }
         } catch {
-            NSLog("Sift: login item: \(error)")
+            NSLog("Cedar: login item: \(error)")
         }
     }
 }
 
-// `Sift --try "100 usd" "2+2" …` prints what the panel would answer, for testing from a terminal.
+// `Cedar --try "100 usd" "2+2" …` prints what the panel would answer, for testing from a terminal.
 if CommandLine.arguments.count > 2, CommandLine.arguments[1] == "--try" {
     let data = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Sift")
+        .appendingPathComponent("Cedar")
     try? FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
     let converter = Converter(dataDir: data)
     let apps = Apps()
@@ -141,7 +141,7 @@ if CommandLine.arguments.count > 2, CommandLine.arguments[1] == "--try" {
     exit(0)
 }
 
-// `Sift --ocr file.pdf 1,2,5`: the text of those pages, for the engine (scanned PDFs).
+// `Cedar --ocr file.pdf 1,2,5`: the text of those pages, for the engine (scanned PDFs).
 if CommandLine.arguments.count > 3, CommandLine.arguments[1] == "--ocr" {
     let pages = CommandLine.arguments[3].split(separator: ",").compactMap { Int($0) }
     let result = OCR.run(path: CommandLine.arguments[2], pages: pages)
@@ -153,8 +153,8 @@ let app = NSApplication.shared
 if CommandLine.arguments.count > 3, CommandLine.arguments[1] == "--snapshot" {
     app.setActivationPolicy(.accessory)
     let data = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Sift")
-    let engine = EngineClient(dataDir: data, engineDir: NSHomeDirectory() + "/Sift/engine")
+        .appendingPathComponent("Cedar")
+    let engine = EngineClient(dataDir: data, engineDir: NSHomeDirectory() + "/Cedar/engine")
     let apps = Apps()
     RunLoop.main.run(until: Date().addingTimeInterval(0.5))
     let search = SearchController(engine: engine, apps: apps, converter: Converter(dataDir: data), usage: Usage(dataDir: data))

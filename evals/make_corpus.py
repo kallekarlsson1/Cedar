@@ -1,7 +1,7 @@
 """Writes a small made-up library to test search on: papers with author blocks and reference lists, notes, a
 duplicate, a text copy of a PDF and a scanned (image-only) PDF. Everything is invented; nothing personal.
 
-    python evals/make_corpus.py /tmp/sift-corpus
+    python evals/make_corpus.py /tmp/cedar-corpus
 """
 
 import sys

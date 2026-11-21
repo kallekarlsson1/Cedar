@@ -116,7 +116,7 @@ class Names:
                 self.db.execute("SELECT COUNT(*) FROM entries").fetchone()[0] == 0
 
     def catch_up(self, log=print) -> int:
-        """Finds what changed while Sift wasn't running, without listing everything: a folder's modification time
+        """Finds what changed while Cedar wasn't running, without listing everything: a folder's modification time
         changes when something in it is added, removed or renamed, so only folders whose time moved are read
         again (hundreds of stat calls instead of 650,000 files)."""
         started = time.time()

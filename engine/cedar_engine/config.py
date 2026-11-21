@@ -1,11 +1,11 @@
-"""Where Sift looks, what it skips, and where it keeps its index."""
+"""Where Cedar looks, what it skips, and where it keeps its index."""
 
 import os
 from pathlib import Path
 
 HOME = Path.home()
-# SIFT_DATA and SIFT_ROOTS point a test run at its own index and folders (evals/, tests/).
-DATA = Path(os.environ["SIFT_DATA"]) if os.environ.get("SIFT_DATA") else HOME / "Library" / "Application Support" / "Sift"
+# CEDAR_DATA and CEDAR_ROOTS point a test run at its own index and folders (evals/, tests/).
+DATA = Path(os.environ["CEDAR_DATA"]) if os.environ.get("CEDAR_DATA") else HOME / "Library" / "Application Support" / "Cedar"
 SOCKET = DATA / "engine.sock"
 NAMES_DB = DATA / "names.db"
 CONTENT_DB = DATA / "content.db"
@@ -51,8 +51,8 @@ def on_battery() -> bool:
 
 def roots() -> list[Path]:
     """Everything a person would look for: the home folder, apps, and plugged-in drives."""
-    if os.environ.get("SIFT_ROOTS"):
-        return [Path(p) for p in os.environ["SIFT_ROOTS"].split(":")]
+    if os.environ.get("CEDAR_ROOTS"):
+        return [Path(p) for p in os.environ["CEDAR_ROOTS"].split(":")]
     out = [HOME, Path("/Applications")]
     if ICLOUD.is_dir():
         out.append(ICLOUD)          # iCloud Drive lives inside ~/Library, which is otherwise skipped

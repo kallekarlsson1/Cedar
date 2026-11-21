@@ -38,7 +38,7 @@ final class Hotkey {
     func register(_ combo: Combo) -> Bool {
         if let ref { UnregisterEventHotKey(ref) }
         ref = nil
-        let id = EventHotKeyID(signature: OSType(0x53494654), id: 1)   // 'SIFT'
+        let id = EventHotKeyID(signature: OSType(0x43454452), id: 1)   // 'CEDR'
         let status = RegisterEventHotKey(combo.keyCode, combo.modifiers, id, GetApplicationEventTarget(), 0, &ref)
         self.combo = status == noErr ? combo : nil
         return status == noErr

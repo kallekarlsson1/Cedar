@@ -7,16 +7,16 @@ from pathlib import Path
 
 import pytest
 
-tmp = Path(tempfile.mkdtemp(prefix="sift-test-"))
-os.environ["SIFT_DATA"] = str(tmp / "index")
-os.environ["SIFT_ROOTS"] = str(tmp / "corpus")
+tmp = Path(tempfile.mkdtemp(prefix="cedar-test-"))
+os.environ["CEDAR_DATA"] = str(tmp / "index")
+os.environ["CEDAR_ROOTS"] = str(tmp / "corpus")
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "evals"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import make_corpus  # noqa: E402
-from sift_engine import config, extract  # noqa: E402
-from sift_engine.content import Content  # noqa: E402
-from sift_engine.names import Names  # noqa: E402
+from cedar_engine import config, extract  # noqa: E402
+from cedar_engine.content import Content  # noqa: E402
+from cedar_engine.names import Names  # noqa: E402
 
 
 @pytest.fixture(scope="session")

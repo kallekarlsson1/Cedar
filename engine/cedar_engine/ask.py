@@ -1,4 +1,4 @@
-"""Search from the terminal: python -m sift_engine.ask "halvorsen plural llm"   (or "--status")."""
+"""Search from the terminal: python -m cedar_engine.ask "halvorsen plural llm"   (or "--status")."""
 
 import json
 import socket

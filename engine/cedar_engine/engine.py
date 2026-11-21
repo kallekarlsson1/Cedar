@@ -23,7 +23,7 @@ from .content import Content
 from .embed import Embedder
 from .names import Names
 
-log = logging.getLogger("sift")
+log = logging.getLogger("cedar")
 
 IDLE_BEFORE_EMBEDDING = 15.0   # seconds after the last search before the GPU goes back to indexing
 IDLE_BEFORE_UNLOAD = 120.0     # with nothing left to embed, free the model after this long without a search
@@ -65,7 +65,7 @@ class Reader:
             self.set_state("listing files")
             self.names.rebuild(log=log.info)
         else:
-            # Search is already up on the last run's index; find what changed while Sift wasn't running.
+            # Search is already up on the last run's index; find what changed while Cedar wasn't running.
             self.set_state("checking for changes")
             self.names.catch_up(log=log.info)
             for (path,) in self.content.db.execute("SELECT path FROM docs").fetchall():
