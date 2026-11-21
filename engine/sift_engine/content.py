@@ -51,6 +51,7 @@ FIELD_WEIGHT = {"name": 1.0, "head": 1.0, "body": 0.5, "refs": 0.12}
 COLUMNS = ["name", "head", "body", "refs"]
 Z_GATE = 2.5          # a passage counts as a meaning match when it stands this far above the rest
 WORD_WEIGHT = 5.0
+TITLE_WEIGHT = 3.0
 # Ties go to the documents people mean: a paper's PDF before a text dump of it.
 KIND_PRIOR = {".pdf": 0.4, ".docx": 0.35, ".pptx": 0.35, ".xlsx": 0.2, ".doc": 0.3, ".md": 0.2, ".tex": 0.15,
               ".txt": 0.0, ".html": 0.05, ".htm": 0.05}
@@ -329,6 +330,22 @@ class Content:
             marks = ",".join("?" * len(candidates))
             kinds = {d: KIND_PRIOR.get(Path(p).suffix.lower(), 0.0) for d, p in
                      db.execute(f"SELECT id, path FROM docs WHERE id IN ({marks})", list(candidates))}
+        # Your words in a document's title or file name: the strongest sign it's the one you mean.
+        titled: dict[int, float] = {}
+        if candidates:
+            marks = ",".join("?" * len(candidates))
+            heads = {d: t[:400] for d, t in db.execute(
+                f"SELECT doc, text FROM chunks WHERE region = 'head' AND doc IN ({marks})", list(candidates))}
+            for d, title, path, embed in db.execute(
+                    f"SELECT id, title, path, embed FROM docs WHERE id IN ({marks})", list(candidates)):
+                # Title, file name and the author line at the top of page 1.
+                name = " ".join(re.findall(r"\w+", " ".join([title or "", Path(path).stem, heads.get(d, "")]).lower()))
+                if not embed and Path(path).suffix.lower() in (".txt", ".md", ".html", ".htm"):
+                    kinds[d] = kinds.get(d, 0.0) - 1.0      # a text copy of a PDF: the PDF goes first
+                words_in = set(name.split())
+                hits = sum(1 for i, t in enumerate(terms)
+                           if t in words_in or (i == len(terms) - 1 and typing_last and re.search(r"\b" + re.escape(t), name)))
+                titled[d] = hits / len(terms)
         scored = []
         for d in candidates:
             z = meaning.get(d, (0.0, None))[0]
@@ -336,7 +353,8 @@ class Content:
             # Meaning counts only where a passage stands out; a near-miss adds nothing (and while indexing is under
             # way it would favor whichever documents happen to be embedded already).
             meant = z if z >= Z_GATE else 0.0
-            scored.append((meant + WORD_WEIGHT * w ** 1.5 + strength.get(d, 0.0) + kinds.get(d, 0.0), d))
+            scored.append((meant + WORD_WEIGHT * w ** 1.5 + TITLE_WEIGHT * titled.get(d, 0.0) ** 2
+                           + strength.get(d, 0.0) + kinds.get(d, 0.0), d))
         scored.sort(reverse=True)
 
         out = []
