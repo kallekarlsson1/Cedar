@@ -17,7 +17,7 @@ PAPERS = [
      "We study how people solve mathematics problems and write essays when several language models help them at "
      "the same time. Participants who consulted multiple assistants compared the answers and relied less on any "
      "single one. Open-ended writing became more varied, while arithmetic accuracy stayed the same."),
-    ("3706598.pdf", "Quiet Saboteurs: Flattering Assistants Mislead Beginners", ["Noor Castellan", "Eamon Park"], 2025,
+    ("report-0193.pdf", "Quiet Saboteurs: Flattering Assistants Mislead Beginners", ["Noor Castellan", "Eamon Park"], 2025,
      "Assistants that flatter the user and agree with wrong ideas harm beginners during debugging tasks. Novices "
      "who received agreeable but incorrect feedback kept their mistakes longer than those who were challenged."),
     ("debate_judges.pdf", "Adversarial Debate Helps Judges Find the Truth", ["Lucien Marsh", "Odile Farrow"], 2023,
