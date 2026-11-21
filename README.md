@@ -1,128 +1,109 @@
 # Cedar
 
-A Spotlight replacement for macOS that finds documents by what's in them: by exact words and by meaning.
+A search bar for the Mac that looks inside your documents. Press ⌘Space, type what you remember, and read the
+result right there.
 
-Press ⌘Space and type what you remember. Cedar answers on every keystroke:
+I built it because Spotlight kept failing me on PDFs. Searching for an author gave me every paper that cites
+them and not the one they wrote.
 
-- **Apps**: `saf` → Safari, `vsc` → Visual Studio Code. Things you open often rank higher.
-- **Math**: `24*1.25`, `(3+4)^2`, `15% of 80`, `sqrt(2)`. A decimal comma works too.
-- **Currencies**: `100 usd`, `$100 to eur`, `500 kr`. Uses the European Central Bank's daily rates.
-- **Units**: `5 km in miles`, `20 c to f`, `180 cm in feet`, `3 dl`.
-- **Files and folders**: any part of the name, across your home folder, Applications and plugged-in drives.
-- **Document contents**: PDFs (scanned ones too), Word, PowerPoint, Excel, Markdown, text, HTML and LaTeX. Each result shows the page
-  and the passage that matched.
+## What it does
+
+- Finds documents by their contents: PDFs (scanned ones too), Word, PowerPoint, Excel, Markdown, text and HTML.
+- Understands descriptions. "the paper about people using several chatbots" finds it even if those words
+  aren't in it.
+- Ranks a paper's title and authors above its body, and its body above its reference list.
+- Shows the document in the panel, at the page that matched, so you can scroll and read without opening
+  another app.
+- Launches apps, finds files and folders by name, does math (`24*1.25`), currency (`100 usd`) and units
+  (`5 km in miles`).
+
+Everything runs on your Mac. Your files and what you type are never sent anywhere.
 
 ## Install
 
-Download `Cedar-x.y.z.dmg` from [Releases](https://github.com/kallekarlsson1/Cedar/releases/latest), open it and
-drag Cedar to Applications. It needs an Apple Silicon Mac with macOS 14 or later.
+You need an Apple Silicon Mac with macOS 14 or later.
 
-Cedar isn't signed with an Apple Developer certificate, so the first time you open it macOS says it can't check
-it. Open **System Settings → Privacy & Security**, scroll down to the message about Cedar and click
-**Open Anyway**. (Or, in Terminal: `xattr -dr com.apple.quarantine /Applications/Cedar.app`.) You only do this once
-per version. Each `.dmg` comes with a `.sha256` file if you want to check the download.
+1. Download `Cedar-x.y.z.dmg` from [Releases](https://github.com/kallekarlsson1/Cedar/releases/latest).
+2. Open it and drag Cedar to Applications.
+3. Open Cedar. macOS will say it can't verify the app, because I don't have an Apple Developer account. Go to
+   System Settings → Privacy & Security, scroll down and click **Open Anyway**. You do this once per version.
+4. Turn off Spotlight's shortcut so ⌘Space reaches Cedar: System Settings → Keyboard → Keyboard Shortcuts →
+   Spotlight. Or pick a different shortcut in Cedar's settings.
 
-On first run Cedar downloads its model (640 MB) and starts reading your files; the welcome window shows progress
-and how to give Cedar ⌘Space.
+The first time it runs, Cedar downloads its language model (640 MB) and starts reading your files. You can
+search straight away. Names work first, then contents, then search by meaning as documents get read. That last
+part can take a few hours for a large library, and it waits for the charger when you're on battery.
 
-To remove it: quit Cedar, delete it from Applications, and delete `~/Library/Application Support/Cedar` (the
-model and the index).
-
-## Why
-
-Spotlight treats every word in a PDF the same. Search for an author and the paper they wrote is buried under
-every paper that only *cites* them, and the PDF's own author field often says something like `arXiv GenPDF`.
-Cedar reads a paper's title and author block separately from its body and its reference list, and ranks them in
-that order. It also searches by meaning: "the paper about people using several chatbots for math and writing"
-finds the paper without those exact words.
-
-## How it works
-
-One binary, three roles (all Swift; no Python, nothing to install besides the app):
-
-```
-Cedar            the panel: apps, math and conversions in-process; asks the engine for the rest
-   │ unix socket (yours only)
-Cedar --engine   lists files, reads documents, follows changes (FSEvents) and answers searches; ~30 MB
-   │ pipe
-Cedar --model    Qwen3-Embedding (8-bit) on llama.cpp + Metal, ~220 MB; embeds passages while you're not
-                 searching, quits after 2 idle minutes, back in under a second
-
-~/Library/Application Support/Cedar/
-   names.db     every file and folder name; trigram index for all but dataset folders' files, which are
-                found by the start of their name. After the first listing, a start reads only changed folders
-   content.db   passages with page numbers, FTS5 keyword index, one vector and one 128-byte code per passage
-```
-
-- **Reading.** PDFs through PDFKit, Word and RTF through macOS's own import, PowerPoint and Excel through unzip,
-  scanned pages through Vision. Each document is split into a title/author block (`head`), overlapping
-  ~200-word passages (`body`, with page numbers) and its reference list (`refs`).
-- **Words.** SQLite FTS5 with Porter stemming. A query word counts by where it's found (file name and title
-  block 1.0, body 0.5, references 0.12) and by how rare it is. Common words are left out.
-- **Meaning.** [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF), 8-bit, on the Mac's
-  GPU through llama.cpp, linked into the binary. For each query every passage's cosine is turned into a z-score;
-  a document is a meaning match only when a passage stands out (z ≥ 2) and is close in absolute terms
-  (cosine ≥ 0.42), so a search can honestly come back empty.
-- **Built to scale.** Memory holds one bit per dimension of each vector (128 bytes a passage). A search finds the
-  closest codes, then scores those few hundred passages exactly from the vectors on disk: the same top 10 as
-  scoring everything (30 queries on a real 22,000-passage library), and a million passages take 128 MB and a
-  2.5 ms scan. Beyond its first pages, a document is embedded in full only if it changed or was opened within
-  two years; opening an older one from Cedar reads it in full.
-- **Light on the machine.** On battery only titles and first pages are embedded; the rest, and text recognition,
-  wait for the charger. Vectors are float16 in memory and leave it, with the model, when Cedar is idle.
-- **Order of work.** The keyword index of everything is built first. Embedding then covers every document's
-  title block and first pages, newest first, before the rest. Text files that copy a PDF are searched by their
-  words but not embedded a second time, and identical passages share one embedding.
-
-## Private by design
-
-Everything Cedar knows about your files stays on your Mac: the index, the model that understands meaning, and the
-text recognition for scanned PDFs (Apple's Vision) all run locally. Cedar goes online for two things only, and
-neither request carries anything you type or store: downloading the model once (640 MB), and fetching the day's
-exchange rates. Files that are only in iCloud are listed by name and never downloaded or opened.
-
-## Checking search quality
-
-`evals/corpus.noindex` is a small made-up library (papers that cite each other, notes, a duplicate, a scan) and
-`evals/queries.json` lists queries with the files they should find. Run it before and after any change to ranking:
-
-```sh
-scripts/check.sh                # the full check, with the model
-scripts/check.sh --words-only   # fast, no model
-```
-
-## Build
-
-Needs an Apple Silicon Mac with macOS 14+, the Xcode Command Line Tools, git, and cmake (or
-[uv](https://docs.astral.sh/uv/), which can run cmake).
-
-```sh
-./build.sh          # builds llama.cpp the first time, then installs ~/Applications/Cedar.app
-open ~/Applications/Cedar.app
-```
-
-Then turn off Spotlight's shortcut in System Settings → Keyboard → Keyboard Shortcuts → Spotlight, so ⌘Space reaches
-Cedar. You can pick another shortcut from Cedar's menu bar icon instead.
-
-From a terminal: `Cedar.app/Contents/MacOS/Cedar --search "halvorsen plural llm"` and `--status`.
-
-## Releasing
-
-`scripts/release.sh 0.2.0` runs the quality check, builds the app and writes `dist/Cedar-0.2.0.dmg`; with
-`--publish` it also tags the version and uploads the disk image to GitHub Releases. `scripts/make-icon.swift`
-draws the icon.
-
-## License
-
-MIT. See [LICENSE](LICENSE), and `app/Resources/Acknowledgements.txt` for llama.cpp and the model.
+To uninstall, delete the app and `~/Library/Application Support/Cedar`.
 
 ## Keys
 
 | Key | |
 |---|---|
-| ↑ ↓ | move through results |
-| ↩ | open (PDFs get your words in the find pasteboard: ⌘G in Preview jumps to them) |
+| ↑ ↓, or hover | show a result in the reader |
+| ↩ | open it |
 | ⌘↩ | show in Finder |
-| ⌘Y, or Space after moving | Quick Look preview |
 | ⌘C | copy the file, or the answer |
 | esc | clear, then close |
+
+## Settings
+
+Click the magnifying glass in the menu bar. You can change the shortcut, exclude folders, pause indexing and
+turn off the exchange-rate download. Folders whose name ends in `.noindex` are always skipped, and so are
+hidden folders and `~/Library`.
+
+## Privacy
+
+Cedar goes online for two things: the model download on first run, and the day's exchange rates (which you can
+switch off). Neither request contains anything from your files or your searches. Files that exist only in
+iCloud are listed by name and never downloaded.
+
+## How it works
+
+Cedar is one program that runs as three processes: the panel, an engine that indexes and searches, and a
+helper that holds the model.
+
+- **Index.** Two SQLite files in `~/Library/Application Support/Cedar`. One has every file name. The other has
+  the text of your documents cut into passages of about 200 words, a keyword index (FTS5), and a vector for
+  each passage.
+- **Reading.** PDFKit for PDFs, Vision for scanned pages. Each paper is split into a title/author block, the
+  body and the reference list, so a match in the author block counts more than a match in someone's citations.
+- **Meaning.** [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF) runs on the GPU
+  through [llama.cpp](https://github.com/ggml-org/llama.cpp). A passage only counts as a match if it clearly
+  stands out, so a search for something you don't have returns nothing.
+- **Memory.** Only a 128-byte code per passage is kept in memory. A search shortlists with the codes and scores
+  the shortlist exactly from disk. The model is unloaded after two idle minutes.
+- **Staying current.** Cedar listens for file changes, so a new file is searchable within seconds.
+
+Documents older than two years only get their first pages embedded until you open them. All their words are
+still searchable.
+
+## Build from source
+
+You need the Xcode Command Line Tools, git, and cmake (or [uv](https://docs.astral.sh/uv/)).
+
+```sh
+./build.sh
+open ~/Applications/Cedar.app
+```
+
+The first build compiles llama.cpp, which takes a few minutes.
+
+`scripts/check.sh` runs the search-quality check: it indexes the made-up documents in `evals/corpus.noindex`
+and checks that the queries in `evals/queries.json` find the right files. Run it before and after changing
+anything about ranking.
+
+`scripts/release.sh 0.2.0` builds the disk image in `dist/`.
+
+## Limits
+
+- Apple Silicon only.
+- Not signed or notarized.
+- No automatic updates yet.
+- It doesn't search Mail, Messages, contacts or calendars.
+- Search by exact word doesn't split Chinese, Japanese or Thai text into words.
+
+## License
+
+MIT. Cedar uses llama.cpp (MIT) and the Qwen3-Embedding model (Apache 2.0); see
+`app/Resources/Acknowledgements.txt`.
