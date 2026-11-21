@@ -71,6 +71,8 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
     private var generation = 0
     private var deepWork: DispatchWorkItem?
     private var keyMonitor: Any?
+    private var pinchMonitor: Any?
+    private var previousApp: NSRunningApplication?   // gets focus back when the panel closes
     private var navigated = false
     private var bodyHeight: NSLayoutConstraint!
     private var isAnswerOnly = false
@@ -197,7 +199,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
         ])
 
         NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: panel, queue: .main) {
-            [weak self] _ in self?.hide()
+            [weak self] _ in self?.hide(returnFocus: false)      // the user moved to another window
         }
     }
 
@@ -214,19 +216,30 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
             panel.setFrameTopLeftPoint(NSPoint(x: frame.midX - width / 2, y: top))
         }
         resize()
+        // Cedar becomes the active app while the panel is open: macOS only delivers pinch gestures to the active app.
+        if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            previousApp = front
+        }
+        NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(field)
         field.currentEditor()?.selectAll(nil)
         startKeyMonitor()
+        startPinchMonitor()
         if !field.stringValue.isEmpty { run(field.stringValue) }
     }
 
-    func hide() {
+    func hide(returnFocus: Bool = true) {
         guard panel.isVisible else { return }
         panel.orderOut(nil)
         detail.zoom(.fit)
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
+        if let pinchMonitor { NSEvent.removeMonitor(pinchMonitor) }
+        pinchMonitor = nil
+        // Give focus back to the app that had it, unless another app is taking over anyway.
+        if returnFocus, NSApp.isActive, let previousApp, !previousApp.isTerminated { previousApp.activate(options: []) }
+        previousApp = nil
     }
 
     private func resize() {
@@ -391,6 +404,25 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
         }
     }
 
+    /// Pinch, or ⌘ with a two-finger scroll, zooms the document under the pointer.
+    private func startPinchMonitor() {
+        guard pinchMonitor == nil else { return }
+        pinchMonitor = NSEvent.addLocalMonitorForEvents(matching: [.magnify, .scrollWheel]) { [weak self] event in
+            guard let self, event.window === self.panel else { return event }
+            if event.type == .scrollWheel {
+                // ⌘ + two-finger scroll zooms.
+                guard event.modifierFlags.contains(.command), self.detail.bounds.contains(self.detail.convert(event.locationInWindow, from: nil))
+                else { return event }
+                self.detail.pinch(event.scrollingDeltaY * (event.hasPreciseScrollingDeltas ? 0.004 : 0.04), ended: event.phase == .ended)
+                return nil
+            }
+            let point = self.detail.convert(event.locationInWindow, from: nil)
+            guard self.detail.bounds.contains(point) else { return event }
+            self.detail.pinch(event.magnification, ended: event.phase == .ended || event.phase == .cancelled)
+            return nil
+        }
+    }
+
     private func handle(_ event: NSEvent) -> Bool {
         let cmd = event.modifierFlags.contains(.command)
         switch Int(event.keyCode) {
@@ -472,13 +504,13 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
             NSWorkspace.shared.open(URL(fileURLWithPath: f.path))
         case .header: return
         }
-        hide()
+        if case .answer = item { hide() } else { hide(returnFocus: false) }
     }
 
     private func revealSelected() {
         guard let path = selected?.path else { return }
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-        hide()
+        hide(returnFocus: false)
     }
 
     private func copySelected() {
@@ -641,6 +673,8 @@ final class DetailView: NSView {
     init() {
         super.init(frame: .zero)
         NotificationCenter.default.addObserver(self, selector: #selector(scaleChanged), name: .PDFViewScaleChanged, object: reader)
+        reader.minScaleFactor = 0.25
+        reader.maxScaleFactor = 6
         reader.displayMode = .singlePageContinuous
         reader.autoScales = true
         reader.displaysPageBreaks = true
@@ -732,8 +766,9 @@ final class DetailView: NSView {
 
     enum Zoom { case larger, smaller, fit }
 
-    /// The PDF scale chosen by zooming, kept across results. Nil means fit the page to the reader's width.
+    /// The PDF scale chosen by zooming, for the document being shown. Nil means fit the page to the reader's width.
     private var pdfScale: CGFloat?
+    private var shownItemPath: String?
     private var notePath: String?
 
     /// Zooms the document in the reader: the PDF page, or the text size of a Markdown note.
@@ -753,6 +788,24 @@ final class DetailView: NSView {
         case .fit: reader.autoScales = true
         }
         pdfScale = change == .fit ? nil : reader.scaleFactor
+    }
+
+    private var notePinch: CGFloat = 1
+
+    /// Applies a pinch gesture step. PDFs follow the fingers; a note is re-rendered when the change adds up.
+    func pinch(_ magnification: CGFloat, ended: Bool) {
+        if !reader.isHidden, reader.document != nil {
+            reader.autoScales = false
+            reader.scaleFactor = min(max(reader.scaleFactor * (1 + magnification), 0.25), 6)
+            pdfScale = reader.scaleFactor
+        } else if !noteScroll.isHidden, let notePath {
+            notePinch *= 1 + magnification
+            if ended || abs(notePinch - 1) > 0.08 {
+                Markdown.scale = min(max(Markdown.scale * notePinch, 0.6), 3)
+                notePinch = 1
+                _ = showNote(notePath, keepPosition: true)
+            }
+        }
     }
 
     /// Pinching changes the scale too; remember it like a keyboard zoom.
@@ -793,6 +846,13 @@ final class DetailView: NSView {
         isHidden = item == nil
         loading += 1
         lastQuery = query
+        // A different document starts at its normal size.
+        if item?.path != shownItemPath {
+            pdfScale = nil
+            Markdown.scale = 1
+            notePinch = 1
+        }
+        shownItemPath = item?.path
         guard let item else { return }
         hint.stringValue = "↩ Open   ⌘↩ Finder   ⌘C Copy   ⌘+ ⌘− Zoom"
         switch item {
