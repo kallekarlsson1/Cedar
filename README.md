@@ -108,3 +108,5 @@ anything about ranking.
 
 MIT. Cedar uses llama.cpp (MIT) and the Qwen3-Embedding model (Apache 2.0); see
 `app/Resources/Acknowledgements.txt`.
+
+The hybrid ranking was inspired by [DigUp](https://github.com/ARahim3/DigUp).
