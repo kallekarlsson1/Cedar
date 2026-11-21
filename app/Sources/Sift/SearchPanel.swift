@@ -73,6 +73,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
     private var keyMonitor: Any?
     private var navigated = false      // moved through results since the last keystroke: Space previews
     private var bodyHeight: NSLayoutConstraint!
+    private var isAnswerOnly = false
 
     private let width: CGFloat = 820
     private let barHeight: CGFloat = 60
@@ -240,7 +241,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
     }
 
     private func resize() {
-        let body: CGFloat = items.isEmpty ? 0 : bodyFull
+        let body: CGFloat = items.isEmpty ? 0 : isAnswerOnly ? 190 : bodyFull
         bodyHeight.constant = body
         divider.isHidden = items.isEmpty
         let height = barHeight + 1 + body
@@ -293,6 +294,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
             return
         }
         rebuild(q)   // instantly: math, conversions, apps (and the last answer while the new one comes)
+        if isAnswerOnly { answer = nil; return }   // math or a conversion: the answer is all you see
         engine.search(text, deep: false) { [weak self] a in
             guard let self, g == self.generation, let a else { return }
             self.answer = a
@@ -318,6 +320,13 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
         for r in converter.convert(q) {
             answers.append(.answer(text: r.text, result: r.result, copy: r.copy, note: r.note))
         }
+
+        if !answers.isEmpty {
+            isAnswerOnly = true
+            show(items: [.header("Top Hit"), answers[0]] + (answers.count > 1 ? [.header("Conversions")] + answers.dropFirst() : []))
+            return
+        }
+        isAnswerOnly = false
 
         let appHits = apps.search(q).map { ($0.0, $0.1 + usage.boost($0.0.url.path)) }
             .filter { $0.1 >= 40 }.sorted { $0.1 > $1.1 }
@@ -364,7 +373,8 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
         var row = items.firstIndex { $0.selectable } ?? -1
         if navigated, let keep, let same = items.firstIndex(where: { $0.path == keep }) { row = same }
         select(row)
-        if wasEmpty != items.isEmpty { resize() } else { updateInline() }
+        let height = barHeight + 1 + (items.isEmpty ? 0 : isAnswerOnly ? 190 : bodyFull)
+        if wasEmpty != items.isEmpty || abs(panel.frame.height - height) > 1 { resize() } else { updateInline() }
     }
 
     private func select(_ row: Int) {
@@ -599,7 +609,7 @@ final class ResultCell: NSView {
 /// rest), then what the file is and where it lives.
 final class DetailView: NSView {
     private let previewArea = NSView()
-    private let pdfView = PDFView()
+    private let pageImage = NSImageView()      // a PDF page, drawn with your words highlighted
     private let quickLook: QLPreviewView = QLPreviewView(frame: .zero, style: .compact)!
     private let bigIcon = NSImageView()
     private let bigText = NSTextField(wrappingLabelWithString: "")
@@ -611,23 +621,33 @@ final class DetailView: NSView {
 
     init() {
         super.init(frame: .zero)
-        pdfView.autoScales = true
-        pdfView.displayMode = .singlePage
-        pdfView.displaysPageBreaks = false
-        pdfView.backgroundColor = .clear
+        pageImage.imageScaling = .scaleProportionallyUpOrDown
+        // Fit the space; never size the window to the picture.
+        for axis in [NSLayoutConstraint.Orientation.horizontal, .vertical] {
+            pageImage.setContentCompressionResistancePriority(.init(1), for: axis)
+            pageImage.setContentHuggingPriority(.init(1), for: axis)
+        }
+        pageImage.wantsLayer = true
+        pageImage.shadow = {
+            let sh = NSShadow()
+            sh.shadowBlurRadius = 6
+            sh.shadowOffset = NSSize(width: 0, height: -1)
+            sh.shadowColor = NSColor.black.withAlphaComponent(0.35)
+            return sh
+        }()
         quickLook.shouldCloseWithWindow = false
         bigIcon.imageScaling = .scaleProportionallyUpOrDown
         bigText.font = .systemFont(ofSize: 30, weight: .medium)
         bigText.alignment = .center
-        for v in [pdfView, quickLook, bigIcon, bigText] as [NSView] {
+        for v in [pageImage, quickLook, bigIcon, bigText] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             previewArea.addSubview(v)
         }
         NSLayoutConstraint.activate([
-            pdfView.topAnchor.constraint(equalTo: previewArea.topAnchor),
-            pdfView.bottomAnchor.constraint(equalTo: previewArea.bottomAnchor),
-            pdfView.leadingAnchor.constraint(equalTo: previewArea.leadingAnchor),
-            pdfView.trailingAnchor.constraint(equalTo: previewArea.trailingAnchor),
+            pageImage.topAnchor.constraint(equalTo: previewArea.topAnchor),
+            pageImage.bottomAnchor.constraint(equalTo: previewArea.bottomAnchor),
+            pageImage.leadingAnchor.constraint(equalTo: previewArea.leadingAnchor),
+            pageImage.trailingAnchor.constraint(equalTo: previewArea.trailingAnchor),
             quickLook.topAnchor.constraint(equalTo: previewArea.topAnchor),
             quickLook.bottomAnchor.constraint(equalTo: previewArea.bottomAnchor),
             quickLook.leadingAnchor.constraint(equalTo: previewArea.leadingAnchor),
@@ -679,7 +699,7 @@ final class DetailView: NSView {
     private enum Mode { case pdf, quickLook, icon, text }
 
     private func use(_ mode: Mode) {
-        pdfView.isHidden = mode != .pdf
+        pageImage.isHidden = mode != .pdf
         quickLook.isHidden = mode != .quickLook
         bigIcon.isHidden = mode != .icon
         bigText.isHidden = mode != .text
@@ -736,48 +756,63 @@ final class DetailView: NSView {
         quickLook.previewItem = URL(fileURLWithPath: path) as NSURL
     }
 
-    /// The page that matched, with the words you typed highlighted.
+    /// The page that matched, drawn with the words you typed highlighted.
+    private var document: (path: String, doc: PDFDocument)?
+    private let renderQueue = DispatchQueue(label: "sift.pdf", qos: .userInitiated)
+
     private func showPDF(_ path: String, page: Int?, query: String) {
         use(.pdf)
+        pageImage.image = nil
         let token = loading
         let words = query.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber })
             .map(String.init).filter { $0.count >= 3 }
-        if pdfView.document?.documentURL?.path == path {
-            go(to: page, words: words)
-            return
-        }
-        pdfView.document = nil
-        DispatchQueue.global(qos: .userInitiated).async {
-            let doc = PDFDocument(url: URL(fileURLWithPath: path))
+        let cached = document?.path == path ? document?.doc : nil
+        renderQueue.async {
+            guard let doc = cached ?? PDFDocument(url: URL(fileURLWithPath: path)) else { return }
+            let image = Self.render(doc, page: page, words: words)
             DispatchQueue.main.async {
-                guard token == self.loading, let doc else { return }
-                self.pdfView.document = doc
-                self.go(to: page, words: words)
+                self.document = (path, doc)
+                guard token == self.loading else { return }
+                self.pageImage.image = image
             }
         }
     }
 
-    private func go(to page: Int?, words: [String]) {
-        guard let doc = pdfView.document else { return }
+    private static func render(_ doc: PDFDocument, page: Int?, words: [String]) -> NSImage? {
         let index = max(0, min((page ?? 1) - 1, doc.pageCount - 1))
-        guard let pdfPage = doc.page(at: index) else { return }
-        pdfView.go(to: pdfPage)
-        var marks: [PDFSelection] = []
-        if let text = pdfPage.string as NSString? {
+        guard let pdfPage = doc.page(at: index) else { return nil }
+        let box = pdfPage.bounds(for: .cropBox)
+        guard box.width > 0, box.height > 0 else { return nil }
+        let scale = 900 / max(box.width, box.height)
+        let size = NSSize(width: box.width * scale, height: box.height * scale)
+        let thumb = pdfPage.thumbnail(of: size, for: .cropBox)
+
+        // Where the words are on the page, in the image's coordinates.
+        var rects: [NSRect] = []
+        if pdfPage.rotation == 0, let text = pdfPage.string as NSString? {
             for word in words {
                 var range = NSRange(location: 0, length: text.length)
-                while marks.count < 60 {
+                while rects.count < 80 {
                     let found = text.range(of: word, options: [.caseInsensitive, .diacriticInsensitive], range: range)
                     if found.location == NSNotFound { break }
-                    if let sel = pdfPage.selection(for: found) {
-                        sel.color = NSColor.systemYellow.withAlphaComponent(0.6)
-                        marks.append(sel)
+                    if let r = pdfPage.selection(for: found)?.bounds(for: pdfPage), !r.isEmpty {
+                        rects.append(NSRect(x: (r.minX - box.minX) * scale - 1, y: (r.minY - box.minY) * scale - 1,
+                                            width: r.width * scale + 2, height: r.height * scale + 2))
                     }
-                    range = NSRange(location: found.location + found.length, length: text.length - found.location - found.length)
+                    let next = found.location + found.length
+                    range = NSRange(location: next, length: text.length - next)
                 }
             }
         }
-        pdfView.highlightedSelections = marks
+        let out = NSImage(size: size)
+        out.lockFocus()
+        NSColor.white.setFill()
+        NSRect(origin: .zero, size: size).fill()
+        thumb.draw(in: NSRect(origin: .zero, size: size))
+        NSColor.systemYellow.withAlphaComponent(0.45).setFill()
+        for r in rects { NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2).fill() }
+        out.unlockFocus()
+        return out
     }
 
     private static func fileFacts(_ path: String) -> [(String, String)] {
