@@ -1,4 +1,5 @@
 import AppKit
+import CedarKit
 import ServiceManagement
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -139,6 +140,31 @@ if CommandLine.arguments.count > 2, CommandLine.arguments[1] == "--try" {
         print("\(q) → " + (lines.isEmpty ? "-" : lines.joined(separator: " | ")))
     }
     exit(0)
+}
+
+// `Cedar --embed-test`: do this binary's vectors match the ones in the index? (And how fast is it.)
+if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "--embed-test" {
+    let model = Config.modelPath
+    let started = Date()
+    guard let m = try? EmbeddingModel(path: CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : model) else { print("no model"); exit(1) }
+    _ = m.embed("warm up")
+    print(String(format: "load %.2f s", Date().timeIntervalSince(started)))
+    let db = try! Database(path: Config.contentDB)
+    let rows = try! db.query("SELECT text, vec FROM chunks WHERE vec IS NOT NULL ORDER BY id % 97, id LIMIT 64")
+    var worst: Float = 1, sum: Float = 0
+    let t = Date()
+    for row in rows {
+        guard let text = row[0].text, let blob = row[1].blob, let got = m.embed(text) else { continue }
+        let ref = blob.withUnsafeBytes { Array($0.bindMemory(to: Float16.self)) }
+        var dot: Float = 0
+        for i in 0..<EmbeddingModel.dimension { dot += got[i] * Float(ref[i]) }
+        worst = min(worst, dot); sum += dot
+    }
+    print(String(format: "parity with the index over %d passages: mean %.4f, worst %.4f", rows.count, sum / Float(rows.count), worst))
+    print(String(format: "%.1f passages/s", Double(rows.count) / Date().timeIntervalSince(t)))
+    let q = Date(); for _ in 0..<10 { _ = m.embedQuery("the paper about several chatbots") }
+    print(String(format: "query %.1f ms", Date().timeIntervalSince(q) * 100))
+    _exit(0)      // skip exit handlers: Metal's teardown asserts while a model is still alive
 }
 
 // `Cedar --ocr file.pdf 1,2,5`: the text of those pages, for the engine (scanned PDFs).
