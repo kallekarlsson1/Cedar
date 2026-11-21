@@ -54,6 +54,8 @@ final class EngineClient {
         p.executableURL = URL(fileURLWithPath: python)
         p.arguments = ["-m", "sift_engine"]
         p.currentDirectoryURL = URL(fileURLWithPath: engineDir)
+        // Searches wait on this process: keep it out of App Nap and off the efficiency cores (as DigUp does).
+        p.qualityOfService = .userInitiated
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
         var env = ProcessInfo.processInfo.environment

@@ -39,6 +39,7 @@ CREATE INDEX IF NOT EXISTS shingles_hash ON shingles(hash);
 CREATE INDEX IF NOT EXISTS shingles_doc ON shingles(doc);
 CREATE INDEX IF NOT EXISTS chunks_todo ON chunks(first_pass, doc) WHERE vec IS NULL;
 -- d holds one token naming the passage's document ("x42"), so one document's passages are found directly.
+CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(name, head, body, refs, d,
     tokenize='porter unicode61 remove_diacritics 2');
 -- The same text, one row per document (rowid = docs.id): which documents have a word, and where, in one lookup.
@@ -80,8 +81,30 @@ class Content:
         self.vec_lock = threading.Lock()
         self.rows = 0
         self.dead_docs: set[int] = set()
+        self.vectors_loaded = False
         if vectors:
-            self._load_vectors()
+            self._check_fingerprint()
+            self.load_vectors()
+
+    def _check_fingerprint(self):
+        with self.db as db:
+            row = db.execute("SELECT value FROM meta WHERE key = 'vectors'").fetchone()
+            if row and row[0] != config.VECTORS:
+                db.execute("UPDATE chunks SET vec = NULL WHERE vec IS NOT NULL")   # made by another model
+            db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('vectors', ?)", (config.VECTORS,))
+
+    def load_vectors(self):
+        with self.vec_lock:
+            if not self.vectors_loaded:
+                self._load_vectors()
+                self.vectors_loaded = True
+
+    def release_vectors(self):
+        """Frees the in-memory copy (~230 MB when everything is embedded); keyword search keeps working."""
+        with self.vec_lock:
+            self.matrix = self.row_chunk = self.row_doc = None
+            self.rows = 0
+            self.vectors_loaded = False
 
     @property
     def db(self) -> sqlite3.Connection:
@@ -114,11 +137,15 @@ class Content:
         """Drops from meaning search the documents another process deleted."""
         live = {d for (d,) in self.db.execute("SELECT id FROM docs")}
         with self.vec_lock:
+            if not self.vectors_loaded:
+                return
             present = set(np.unique(self.row_doc[: self.rows]).tolist())
         self.dead_docs = present - live
 
     def _append_vectors(self, chunk_ids, doc_ids, vecs):
         with self.vec_lock:
+            if not self.vectors_loaded:
+                return            # they're in the database; the next load brings them
             need = self.rows + len(chunk_ids)
             if need > len(self.matrix):
                 cap = int(need * 1.5)
@@ -266,7 +293,8 @@ class Content:
         docs = self.db.execute("SELECT COUNT(*) FROM docs WHERE state = 'ok'").fetchone()[0]
         todo = self.db.execute("""SELECT COUNT(*), SUM(c.first_pass) FROM chunks c JOIN docs d ON d.id = c.doc
             WHERE c.vec IS NULL AND d.embed = 1 AND c.region IN ('head', 'body')""").fetchone()
-        return {"documents": docs, "vectors": self.rows, "to_embed": todo[0] or 0, "first_pass_left": todo[1] or 0}
+        done = self.db.execute("SELECT COUNT(*) FROM chunks WHERE vec IS NOT NULL").fetchone()[0]
+        return {"documents": docs, "vectors": done, "to_embed": todo[0] or 0, "first_pass_left": todo[1] or 0}
 
     # ---- search -----------------------------------------------------------------------------------------------
 
@@ -307,7 +335,7 @@ class Content:
         # Meaning: every passage scored, put on this query's scale, best passage per document.
         meaning: dict[int, tuple[float, int]] = {}
         q = None
-        if deep and self.embedder and self.embedder.ready.is_set() and self.rows > 50:
+        if deep and self.embedder and self.embedder.ready.is_set() and self.vectors_loaded and self.rows > 50:
             try:
                 q = self.embedder.query([query])[0]
             except Exception:

@@ -11,6 +11,9 @@ CONTENT_DB = DATA / "content.db"
 LOG = DATA / "engine.log"
 
 MODEL = "Qwen/Qwen3-Embedding-0.6B"
+# Names the vectors in the index. When it changes (another model, runtime or precision), every passage is embedded
+# again rather than mixing vectors that don't compare.
+VECTORS = "Qwen/Qwen3-Embedding-0.6B | sentence-transformers fp16 | v1"
 
 
 def roots() -> list[Path]:
@@ -59,3 +62,14 @@ FIRST_PASS_CHUNKS = 10
 def skip_dir(path: Path, name: str) -> bool:
     return (name.startswith(".") or name in SKIP_NAMES or path in SKIP_PATHS
             or os.path.splitext(name)[1].lower() in PACKAGES)
+
+
+def set_priority(kind: str):
+    """macOS quality of service for this thread: "search" keeps it on the performance cores and out of App Nap
+    (DigUp measured App Nap and efficiency cores slowing a search from 125 to 650 ms); "background" for indexing."""
+    import ctypes
+    classes = {"search": 0x19, "background": 0x11}   # QOS_CLASS_USER_INITIATED, QOS_CLASS_UTILITY
+    try:
+        ctypes.CDLL("/usr/lib/libSystem.B.dylib").pthread_set_qos_class_self_np(classes[kind], 0)
+    except Exception:
+        pass

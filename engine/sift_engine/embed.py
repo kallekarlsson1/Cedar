@@ -21,6 +21,7 @@ log = logging.getLogger("sift")
 def worker_main(conn):
     """The helper process: loads the model, then embeds what it's sent until told to stop (or the engine goes)."""
     logging.basicConfig(filename=config.LOG, level=logging.INFO, format="%(asctime)s %(process)d %(message)s")
+    config.set_priority("search")   # a search waits on this process; indexing steps are small enough to share it
     try:
         import torch
         from sentence_transformers import SentenceTransformer

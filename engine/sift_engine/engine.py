@@ -33,6 +33,7 @@ IDLE_BEFORE_UNLOAD = 600.0     # with nothing left to embed, free the model afte
 def reader_main(state, parent_pid: int):
     _setup_logging()
     os.nice(10)
+    config.set_priority("background")
     reader = Reader(state)
     try:
         reader.run(parent_pid)
@@ -150,9 +151,19 @@ class Engine:
         self.reader.start()
         threading.Thread(target=self._embed_loop, daemon=True).start()
 
+    def _wake(self):
+        """Vectors and model back in memory (after an idle unload, or at start)."""
+        self.content.load_vectors()
+        self.embedder.load(log=log.info)
+
+    def _sleep(self):
+        self.embedder.unload(log=log.info)
+        self.content.release_vectors()
+
     def _embed_loop(self):
+        config.set_priority("background")
         try:
-            self.embedder.load(log=log.info)
+            self._wake()
         except Exception:
             log.exception("model failed to load; searching by words only")
             return
@@ -168,7 +179,7 @@ class Engine:
             if not self.embedder.loaded:
                 # Unloaded while idle: come back only when there's new work.
                 if self.content.progress()["to_embed"]:
-                    self.embedder.load(log=log.info)
+                    self._wake()
                 else:
                     time.sleep(5)
                 continue
@@ -180,7 +191,7 @@ class Engine:
                 done = 0
             if not done:
                 if idle > IDLE_BEFORE_UNLOAD:
-                    self.embedder.unload(log=log.info)
+                    self._sleep()
                 time.sleep(3)
 
     def search(self, q: str, deep: bool) -> dict:
@@ -188,7 +199,7 @@ class Engine:
         started = time.time()
         if deep and not self.embedder.loaded:
             # Back from idle: words answer now; meaning joins once the model is in (~2 s), for this search if it can.
-            threading.Thread(target=self.embedder.load, kwargs={"log": log.info}, daemon=True).start()
+            threading.Thread(target=self._wake, daemon=True).start()
             self.embedder.ready.wait(2.5)
         docs = self.content.search(q, deep=deep)
         # A copy of the same file ("paper (1).pdf") shows once.
@@ -214,6 +225,7 @@ class Engine:
 
 class Handler(socketserver.StreamRequestHandler):
     def handle(self):
+        config.set_priority("search")
         engine: Engine = self.server.engine
         for line in self.rfile:
             try:
