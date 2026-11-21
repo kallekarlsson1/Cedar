@@ -25,6 +25,7 @@ from .names import Names
 log = logging.getLogger("sift")
 
 IDLE_BEFORE_EMBEDDING = 15.0   # seconds after the last search before the GPU goes back to indexing
+IDLE_BEFORE_UNLOAD = 600.0     # with nothing left to embed, free the model after this long without a search
 
 
 # ---- reader process ---------------------------------------------------------------------------------------------
@@ -157,12 +158,20 @@ class Engine:
             return
         last_cleanup = time.time()
         while True:
-            if time.time() - self.last_search < IDLE_BEFORE_EMBEDDING:
+            idle = time.time() - self.last_search
+            if idle < IDLE_BEFORE_EMBEDDING:
                 time.sleep(0.5)
                 continue
             if time.time() - last_cleanup > 600:
                 self.content.forget_deleted()
                 last_cleanup = time.time()
+            if not self.embedder.loaded:
+                # Unloaded while idle: come back only when there's new work.
+                if self.content.progress()["to_embed"]:
+                    self.embedder.load(log=log.info)
+                else:
+                    time.sleep(5)
+                continue
             try:
                 done = self.content.embed_some(
                     limit=32, pause=lambda: time.time() - self.last_search < IDLE_BEFORE_EMBEDDING)
@@ -170,11 +179,17 @@ class Engine:
                 log.exception("embedding failed")
                 done = 0
             if not done:
+                if idle > IDLE_BEFORE_UNLOAD:
+                    self.embedder.unload(log=log.info)
                 time.sleep(3)
 
     def search(self, q: str, deep: bool) -> dict:
         self.last_search = time.time()
         started = time.time()
+        if deep and not self.embedder.loaded:
+            # Back from idle: words answer now; meaning joins once the model is in (~2 s), for this search if it can.
+            threading.Thread(target=self.embedder.load, kwargs={"log": log.info}, daemon=True).start()
+            self.embedder.ready.wait(2.5)
         docs = self.content.search(q, deep=deep)
         # A copy of the same file ("paper (1).pdf") shows once.
         seen, unique = set(), []

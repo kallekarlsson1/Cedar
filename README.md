@@ -24,8 +24,10 @@ separately from its body and its reference list, and ranks them in that order. I
 ```
 Sift.app (Swift, AppKit)          the panel: apps, math, conversions in-process; asks the engine for the rest
    │ unix socket (yours only)
-engine, search process (Python)   keyword + meaning search, ~2–40 ms; embeds passages while you're not searching
+engine, search process (Python)   keyword + meaning search; ~100 MB, never loads PyTorch
 engine, reader process            lists files, reads documents, follows changes (FSEvents), at low priority
+engine, model process             Qwen3-Embedding on the GPU (~2 GB); embeds passages while you're not searching,
+                                  and quits after 10 idle minutes once everything is embedded
    │
 ~/Library/Application Support/Sift/
    names.db     every file and folder name, trigram index (~650k names, 15 s to list)

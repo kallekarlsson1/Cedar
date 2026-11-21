@@ -306,8 +306,13 @@ class Content:
 
         # Meaning: every passage scored, put on this query's scale, best passage per document.
         meaning: dict[int, tuple[float, int]] = {}
+        q = None
         if deep and self.embedder and self.embedder.ready.is_set() and self.rows > 50:
-            q = self.embedder.query([query])[0]
+            try:
+                q = self.embedder.query([query])[0]
+            except Exception:
+                q = None          # the model was unloaded mid-search: words only this time
+        if deep and q is not None:
             with self.vec_lock:
                 n = self.rows
                 scores = self.matrix[:n] @ q
