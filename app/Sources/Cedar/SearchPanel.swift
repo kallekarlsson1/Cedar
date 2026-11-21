@@ -224,6 +224,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
     func hide() {
         guard panel.isVisible else { return }
         panel.orderOut(nil)
+        detail.zoom(.fit)
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
     }
@@ -407,6 +408,9 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
         }
         if cmd, let key = event.charactersIgnoringModifiers?.lowercased() {
             switch key {
+            case "+", "=": detail.zoom(.larger); return true
+            case "-": detail.zoom(.smaller); return true
+            case "0": detail.zoom(.fit); return true
             case "y": preview(); return true
             case "c" where (field.currentEditor()?.selectedRange.length ?? 0) == 0:
                 // Text selected in the reader takes priority over copying the file.
@@ -636,6 +640,7 @@ final class DetailView: NSView {
 
     init() {
         super.init(frame: .zero)
+        NotificationCenter.default.addObserver(self, selector: #selector(scaleChanged), name: .PDFViewScaleChanged, object: reader)
         reader.displayMode = .singlePageContinuous
         reader.autoScales = true
         reader.displaysPageBreaks = true
@@ -725,6 +730,45 @@ final class DetailView: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    enum Zoom { case larger, smaller, fit }
+
+    /// The PDF scale chosen by zooming, kept across results. Nil means fit the page to the reader's width.
+    private var pdfScale: CGFloat?
+    private var notePath: String?
+
+    /// Zooms the document in the reader: the PDF page, or the text size of a Markdown note.
+    func zoom(_ change: Zoom) {
+        if !noteScroll.isHidden || (change == .fit && Markdown.scale != 1) {
+            switch change {
+            case .larger: Markdown.scale = min(Markdown.scale * 1.15, 3)
+            case .smaller: Markdown.scale = max(Markdown.scale / 1.15, 0.6)
+            case .fit: Markdown.scale = 1
+            }
+            if !noteScroll.isHidden, let notePath { _ = showNote(notePath, keepPosition: true) }
+        }
+        guard !reader.isHidden || change == .fit else { return }
+        switch change {
+        case .larger: reader.autoScales = false; reader.scaleFactor = min(reader.scaleFactor * 1.2, 6)
+        case .smaller: reader.autoScales = false; reader.scaleFactor = max(reader.scaleFactor / 1.2, 0.25)
+        case .fit: reader.autoScales = true
+        }
+        pdfScale = change == .fit ? nil : reader.scaleFactor
+    }
+
+    /// Pinching changes the scale too; remember it like a keyboard zoom.
+    @objc private func scaleChanged() {
+        if !reader.autoScales, !reader.isHidden, reader.document != nil { pdfScale = reader.scaleFactor }
+    }
+
+    private func applyPDFScale() {
+        if let pdfScale {
+            reader.autoScales = false
+            reader.scaleFactor = pdfScale
+        } else {
+            reader.autoScales = true
+        }
+    }
+
     /// Text the user has selected in the reader, if any.
     var selectedText: String? {
         if !reader.isHidden { return reader.currentSelection?.string }
@@ -750,7 +794,7 @@ final class DetailView: NSView {
         loading += 1
         lastQuery = query
         guard let item else { return }
-        hint.stringValue = "↩ Open   ⌘↩ Finder   ⌘C Copy"
+        hint.stringValue = "↩ Open   ⌘↩ Finder   ⌘C Copy   ⌘+ ⌘− Zoom"
         switch item {
         case .answer(_, let result, _, let note):
             use(.text)
@@ -795,12 +839,19 @@ final class DetailView: NSView {
 
     /// Shows a Markdown file, scrolled to the first highlighted word.
     private var lastQuery = ""
-    private func showNote(_ path: String) -> Bool {
+    private func showNote(_ path: String, keepPosition: Bool = false) -> Bool {
         guard let data = FileManager.default.contents(atPath: path), data.count < 3_000_000 else { return false }
         let words = lastQuery.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
         let text = Markdown.render(String(decoding: data, as: UTF8.self), highlight: words)
         use(.note)
+        notePath = path
+        let visible = noteScroll.contentView.bounds.origin.y / max(noteText.frame.height, 1)
         noteText.textStorage?.setAttributedString(text)
+        if keepPosition {
+            noteText.layoutManager?.ensureLayout(for: noteText.textContainer!)
+            noteText.scroll(NSPoint(x: 0, y: visible * noteText.frame.height))
+            return true
+        }
         var target = NSRange(location: 0, length: 0)
         text.enumerateAttribute(.backgroundColor, in: NSRange(location: 0, length: text.length)) { value, range, stop in
             if let c = value as? NSColor, c.alphaComponent > 0.3 { target = range; stop.pointee = true }
@@ -830,7 +881,7 @@ final class DetailView: NSView {
                 guard token == self.loading else { return }
                 self.reader.document = doc
                 self.shownPath = path
-                self.reader.autoScales = true
+                self.applyPDFScale()
                 DispatchQueue.main.async { self.go(to: page, words: words) }
             }
         }

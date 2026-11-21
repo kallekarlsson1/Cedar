@@ -56,7 +56,8 @@ To uninstall, delete the app and `~/Library/Application Support/Cedar`.
 | ↑ ↓, or hover | show a result in the reader |
 | ↩ | open it |
 | ⌘↩ | show in Finder |
-| ⌘C | copy the file, or the answer |
+| ⌘C | copy the selected text, the file, or the answer |
+| ⌘+ ⌘− ⌘0, or pinch | zoom the document in the reader |
 | esc | clear, then close |
 
 ## Settings

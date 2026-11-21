@@ -3,8 +3,10 @@ import AppKit
 /// Renders Markdown to an attributed string: headings, emphasis, lists, quotes, code, tables, links and
 /// [[wiki links]]. Front matter is shown as a small header.
 enum Markdown {
-    static let body = NSFont.systemFont(ofSize: 14)
-    static let mono = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)
+    /// Text size multiplier, changed by zooming in the reader.
+    static var scale: CGFloat = 1
+    static var body: NSFont { .systemFont(ofSize: 14 * scale) }
+    static var mono: NSFont { .monospacedSystemFont(ofSize: 12.5 * scale, weight: .regular) }
 
     static func render(_ source: String, highlight words: [String]) -> NSAttributedString {
         let out = NSMutableAttributedString()
@@ -19,7 +21,7 @@ enum Markdown {
                 let clean = line.replacingOccurrences(of: "\"", with: "")
                     .replacingOccurrences(of: #"\[\[([^\]|]*\|)?([^\]]+)\]\]"#, with: "$2", options: .regularExpression)
                 out.append(NSAttributedString(string: clean + "\n", attributes: [
-                    .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: style]))
+                    .font: NSFont.systemFont(ofSize: 11 * scale), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: style]))
             }
             out.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 6)]))
             lines = Array(lines[(end + 1)...])
@@ -43,7 +45,7 @@ enum Markdown {
             // Headings.
             if let m = trimmed.range(of: #"^#{1,6}\s+"#, options: .regularExpression) {
                 let level = trimmed[m].filter { $0 == "#" }.count
-                let size: CGFloat = [22, 18, 16, 14.5, 14, 14][level - 1]
+                let size: CGFloat = [22, 18, 16, 14.5, 14, 14][level - 1] * scale
                 let text = String(trimmed[m.upperBound...]).replacingOccurrences(of: #"\s+#+\s*$"#, with: "", options: .regularExpression)
                 out.append(inline(text, font: .systemFont(ofSize: size, weight: level <= 2 ? .bold : .semibold),
                                   style: paragraph(spacing: 6, before: level <= 2 ? 10 : 6)))
@@ -92,7 +94,7 @@ enum Markdown {
                 let columns = rows.map(\.count).max() ?? 0
                 let widths = (0..<columns).map { c in min(rows.map { c < $0.count ? $0[c].count : 0 }.max() ?? 0, 26) }
                 // Hanging indent so a long last cell wraps under its own column.
-                let tableFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+                let tableFont = NSFont.monospacedSystemFont(ofSize: 12 * scale, weight: .regular)
                 let charWidth = ("0" as NSString).size(withAttributes: [.font: tableFont]).width
                 let lastStart = CGFloat(widths.dropLast().reduce(0, +) + 3 * max(columns - 1, 0)) * charWidth
                 let rowStyle = paragraph(spacing: 3, indent: min(lastStart, 500), firstIndent: 0)
@@ -101,7 +103,7 @@ enum Markdown {
                         c == columns - 1 ? cell : String(cell.prefix(26)).padding(toLength: widths[c], withPad: " ", startingAt: 0)
                     }.joined(separator: "   ")
                     out.append(NSAttributedString(string: text + "\n", attributes: [
-                        .font: n == 0 ? NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold) : tableFont,
+                        .font: n == 0 ? NSFont.monospacedSystemFont(ofSize: 12 * scale, weight: .semibold) : tableFont,
                         .foregroundColor: NSColor.labelColor, .paragraphStyle: rowStyle]))
                 }
                 continue

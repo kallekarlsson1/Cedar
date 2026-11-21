@@ -90,7 +90,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, AppCon
 
     private func buildMenu() {
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        status.button?.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Cedar")
+        status.button?.image = TreeIcon.menuBar()
+        status.button?.setAccessibilityLabel("Cedar")
         let menu = NSMenu()
         menu.delegate = self
         menu.addItem(withTitle: "Open Cedar", action: #selector(openPanel), keyEquivalent: "")
