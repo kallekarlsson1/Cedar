@@ -2,10 +2,12 @@ import AppKit
 import CedarKit
 import ServiceManagement
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, AppControls {
     private var status: NSStatusItem!
     private var hotkey: Hotkey!
-    private var engine: EngineClient!
+    var engine: EngineClient!
+    private var settingsWindow: SettingsController?
+    private var welcomeWindow: WelcomeController?
     private var search: SearchController!
     private let statusLine = NSMenuItem(title: "Starting…", action: nil, keyEquivalent: "")
     private let shortcutMenu = NSMenu()
@@ -23,6 +25,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotkey = Hotkey { [weak self] in self?.search.toggle() }
         registerSavedShortcut()
         buildMenu()
+        if !UserDefaults.standard.bool(forKey: "welcomed") { showWelcome() }
+    }
+
+    var shortcutIndex: Int { min(max(UserDefaults.standard.integer(forKey: "shortcut"), 0), Hotkey.choices.count - 1) }
+    var shortcutTaken: Bool { hotkey.combo == nil }
+
+    func setShortcut(_ index: Int) {
+        UserDefaults.standard.set(index, forKey: "shortcut")
+        registerSavedShortcut()
+        updateShortcutMenu()
+    }
+
+    @objc func showSettings() {
+        if settingsWindow == nil { settingsWindow = SettingsController(app: self) }
+        settingsWindow?.show()
+    }
+
+    @objc func showWelcome() {
+        if welcomeWindow == nil { welcomeWindow = WelcomeController(app: self) }
+        welcomeWindow?.show()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -57,6 +79,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusLine.isEnabled = false
         menu.addItem(statusLine)
         menu.addItem(.separator())
+        menu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
+        menu.addItem(withTitle: "Welcome Guide", action: #selector(showWelcome), keyEquivalent: "")
         let shortcut = NSMenuItem(title: "Shortcut", action: nil, keyEquivalent: "")
         shortcut.submenu = shortcutMenu
         menu.addItem(shortcut)
@@ -90,27 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         menu.item(withTag: 99)?.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        engine.status { [weak self] s in
-            guard let self else { return }
-            guard let s else { self.statusLine.title = "Engine not running"; return }
-            let fmt = NumberFormatter()
-            fmt.numberStyle = .decimal
-            let n = { (x: Int) in fmt.string(from: NSNumber(value: x)) ?? "\(x)" }
-            var line = "\(n(s.names)) files · \(n(s.documents)) documents"
-            if s.to_embed > 0 {
-                let total = s.vectors + s.to_embed
-                let pct = total > 0 ? Int(Double(s.vectors) / Double(total) * 100) : 0
-                line += " · understanding \(pct)%"
-                if let rate = s.rate, rate > 0, s.state == "embedding" {
-                    let minutes = Double(s.to_embed) / rate / 60
-                    line += minutes < 90 ? " · about \(max(Int(minutes.rounded()), 1)) min left" : " · about \(Int((minutes / 60).rounded())) h left"
-                }
-                if s.state == "waiting for the charger" { line += " (paused on battery)" }
-            } else if s.state != "up to date" && s.state != "embedding" {
-                line += " · \(s.state)"
-            }
-            self.statusLine.title = line
-        }
+        engine.status { [weak self] s in self?.statusLine.title = StatusText.line(s) }
     }
 
     @objc private func openPanel() { search.show() }
@@ -287,6 +291,30 @@ if CommandLine.arguments.count > 3, CommandLine.arguments[1] == "--ocr" {
 }
 
 let app = NSApplication.shared
+if CommandLine.arguments.count > 3, CommandLine.arguments[1] == "--snapshot-window" {
+    app.setActivationPolicy(.accessory)
+    final class Stand: NSObject, AppControls {
+        var engine: EngineClient! = EngineClient(dataDir: Config.data)
+        var shortcutIndex = 0
+        var shortcutTaken = false
+        func setShortcut(_ index: Int) { shortcutIndex = index }
+    }
+    let stand = Stand()
+    var window: NSWindow
+    var keep: AnyObject
+    if CommandLine.arguments[2] == "settings" { let c = SettingsController(app: stand); c.show(); window = c.window; keep = c }
+    else { let c = WelcomeController(app: stand); c.show(); window = c.window; keep = c }
+    window.contentView?.wantsLayer = true      // the picture has no window behind it: paint the background in
+    window.contentView?.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+    RunLoop.main.run(until: Date().addingTimeInterval(1.5))
+    if let view = window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+        view.cacheDisplay(in: view.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: CommandLine.arguments[3]))
+        print("window", window.frame.size)
+    }
+    _ = keep
+    exit(0)
+}
 if CommandLine.arguments.count > 3, CommandLine.arguments[1] == "--snapshot" {
     app.setActivationPolicy(.accessory)
     let data = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

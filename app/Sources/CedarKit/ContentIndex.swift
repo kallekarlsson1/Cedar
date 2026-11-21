@@ -349,7 +349,7 @@ public final class ContentIndex {
     /// Reads again the PDFs whose scanned pages were waiting for the charger.
     @discardableResult
     public func readScans(log: (String) -> Void = { _ in }) throws -> Int {
-        guard !Config.onBattery() else { return 0 }
+        guard !Config.onBattery(), !Settings.current.paused else { return 0 }
         let waiting = try write.query("SELECT path, mtime, size FROM docs WHERE state = 'ocr'")
         for row in waiting { try add(row[0].text ?? "", mtime: row[1].double ?? 0, size: row[2].int ?? 0) }
         if !waiting.isEmpty { log("read \(waiting.count) scanned PDFs") }
@@ -366,7 +366,7 @@ public final class ContentIndex {
 
     /// SQL condition on chunks c / docs d: this passage should have a vector.
     static func wanted(now: Double = Date().timeIntervalSince1970) -> String {
-        "(c.first_pass = 1 OR max(COALESCE(d.opened, 0), d.mtime) > \(now - deepWindow))"
+        Settings.current.deepEverything ? "1" : "(c.first_pass = 1 OR max(COALESCE(d.opened, 0), d.mtime) > \(now - deepWindow))"
     }
 
     /// You opened this document from Cedar: read it in full, soon.

@@ -46,7 +46,7 @@ public final class Names {
         out.reserveCapacity(kept.count)
         for name in kept {
             let path = folder == "/" ? "/" + name : folder + "/" + name
-            if Config.skipPaths.contains(path) { continue }
+            if Config.skipPaths.contains(path) || Settings.current.excluded.contains(path) { continue }
             var st = stat()
             guard lstat(path, &st) == 0 else { continue }
             let isDir = (st.st_mode & S_IFMT) == S_IFDIR
@@ -132,7 +132,8 @@ public final class Names {
     }
 
     /// Brings one folder's direct children in line with the disk. Returns how many entries changed.
-    func reread(_ folder: String) throws -> Int {
+    @discardableResult
+    public func reread(_ folder: String) throws -> Int {
         let listed = Dictionary(Self.list(folder).map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
         var known: [String: Bool] = [:]
         for row in try db.query("SELECT path, crowded FROM entries WHERE path > ? AND path < ? AND instr(substr(path, ?), '/') = 0",

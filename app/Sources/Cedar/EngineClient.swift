@@ -85,6 +85,24 @@ final class EngineClient {
         }
     }
 
+    /// Settings changed: the engine reads them again.
+    func reload() {
+        queue.async { _ = try? self.request(["op": "reload"], timeout: 2) }
+    }
+
+    /// Throws the index away and starts the engine again from nothing.
+    func rebuild() {
+        stop()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            let dir = (self.socketPath as NSString).deletingLastPathComponent
+            for name in ["names.db", "content.db"] {
+                for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: dir + "/" + name + suffix) }
+            }
+            self.restarts = 0
+            self.launch()
+        }
+    }
+
     /// Tells the engine a document was opened, so it's read in full if it wasn't.
     func opened(_ path: String) {
         queue.async { _ = try? self.request(["op": "opened", "path": path], timeout: 2) }

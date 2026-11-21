@@ -30,7 +30,14 @@ final class Converter {
         ratesDate = file.date
     }
 
+    /// Settings: whether Cedar may fetch the day's exchange rates (on unless switched off).
+    static var ratesAllowed: Bool {
+        get { UserDefaults.standard.object(forKey: "rates") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "rates") }
+    }
+
     func refresh() {
+        guard Self.ratesAllowed else { return }
         if let attrs = try? FileManager.default.attributesOfItem(atPath: ratesFile.path),
            let modified = attrs[.modificationDate] as? Date, Date().timeIntervalSince(modified) < 6 * 3600 { return }
         guard let url = URL(string: "https://api.frankfurter.dev/v1/latest?base=EUR") else { return }

@@ -20,6 +20,8 @@ public final class Engine {
     private let changeSignal = DispatchSemaphore(value: 0)
     private var work = 0                    // counts up when there may be new passages to embed
     private var rate = 0.0                  // passages per second, smoothed: for the time estimate
+    private var settingsChanged: Settings?  // the settings before a change the reader still has to apply
+    private var downloading = false
 
     struct Answer: Codable { let docs: [DocHit]; let files: [FileHit]; let ms: Double }
     struct Status: Codable {
@@ -64,6 +66,7 @@ public final class Engine {
             while true {
                 _ = changeSignal.wait(timeout: .now() + 60)      // sleeps until a file changes
                 Thread.sleep(forTimeInterval: 2)                 // let a burst of changes (a download, a save) finish
+                try applySettings()
                 try applyChanges()
                 if try content.readScans(log: logLine) > 0 { moreWork() }   // scans that waited for the charger
                 if Date().timeIntervalSince(lastFull) > 7 * 24 * 3600 {     // a safety net; changes arrive live
@@ -84,6 +87,23 @@ public final class Engine {
         try content.readScans(log: logLine)
         try content.markCopies(log: logLine)
         moreWork()
+    }
+
+    /// Settings changed: forget what's in newly excluded folders, and list the ones that are searched again.
+    private func applySettings() throws {
+        lock.lock(); let before = settingsChanged; settingsChanged = nil; lock.unlock()
+        guard let before else { return }
+        let now = Settings.current
+        for folder in now.excluded where !before.excluded.contains(folder) {
+            try names.remove(folder)
+            try content.remove(path: folder)
+            try content.removeUnder(folder: folder)
+        }
+        let back = before.excluded.filter { !now.excluded.contains($0) }
+        for folder in back { try names.reread((folder as NSString).deletingLastPathComponent) }
+        if !back.isEmpty { try syncAll() }
+        moreWork()
+        logLine("settings applied: \(now.excluded.count) folders excluded, paused \(now.paused)")
     }
 
     private func applyChanges() throws {
@@ -113,6 +133,7 @@ public final class Engine {
         var parts = path.split(separator: "/").map(String.init)
         if parts.contains(where: { $0.hasPrefix(".") || Config.skipNames.contains($0) }) { return true }
         if parts.dropLast().contains(where: { $0.hasSuffix(".noindex") }) { return true }
+        if Settings.current.excludes(path) { return true }
         if path.hasPrefix(Config.iCloud + "/") {
             parts = Array(parts.dropFirst(Config.iCloud.split(separator: "/").count))    // inside ~/Library but wanted
         } else if Config.skipPaths.contains(where: { path == $0 || path.hasPrefix($0 + "/") }) {
@@ -126,7 +147,9 @@ public final class Engine {
     private func wake() {
         try? content.makeMissingCodes()
         content.loadVectors()
+        lock.lock(); downloading = !ModelClient.modelIsHere; lock.unlock()
         model.load(log: logLine)
+        lock.lock(); downloading = false; lock.unlock()
     }
 
     private func embedLoop() {
@@ -135,6 +158,7 @@ public final class Engine {
         while true {
             let idle = sinceSearch
             if idle < Self.idleBeforeEmbedding { Thread.sleep(forTimeInterval: 0.5); continue }
+            if Settings.current.paused { Thread.sleep(forTimeInterval: 2); continue }
             let battery = Config.onBattery()
             if !model.loaded {
                 // Unloaded while idle: come back only when there's work it's allowed to do now. The database is
@@ -199,8 +223,10 @@ public final class Engine {
         lock.lock(); var reading = state; let rate = self.rate; lock.unlock()
         let p = content.progress()
         if reading == "up to date" && p.to_embed > 0 {
-            reading = Config.onBattery() && p.first_pass_left == 0 ? "waiting for the charger" : "embedding"
+            reading = Settings.current.paused ? "paused"
+                : Config.onBattery() && p.first_pass_left == 0 ? "waiting for the charger" : "embedding"
         }
+        lock.lock(); if downloading { reading = "downloading the model" }; lock.unlock()
         return Status(state: reading, names: names.count(), model: model.loaded, documents: p.documents, vectors: p.vectors,
                       to_embed: p.to_embed, first_pass_left: p.first_pass_left, rate: (rate * 10).rounded() / 10)
     }
@@ -210,6 +236,14 @@ public final class Engine {
         guard let request = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { return Data(#"{"error":"bad request"}"#.utf8) }
         switch request["op"] as? String {
         case "search": return (try? encoder.encode(search(request["q"] as? String ?? "", deep: request["deep"] as? Bool ?? false))) ?? Data()
+        case "reload":
+            let before = Settings.current
+            Settings.current = Settings.load()
+            if before != Settings.current {
+                lock.lock(); settingsChanged = settingsChanged ?? before; lock.unlock()
+                changeSignal.signal()
+            }
+            return Data("{}".utf8)
         case "opened":
             try? content.opened(request["path"] as? String ?? "")
             moreWork()

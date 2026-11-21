@@ -21,6 +21,14 @@ public final class ModelClient {
     public var loaded: Bool { process?.isRunning == true }
     public var searchWaiting: Bool { countLock.lock(); defer { countLock.unlock() }; return waiting > 0 }
 
+    /// True when the model file is on this Mac already (no download needed).
+    public static var modelIsHere: Bool {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: Config.modelPath) { return true }
+        let cache = NSHomeDirectory() + "/.cache/huggingface/hub/models--Qwen--Qwen3-Embedding-0.6B-GGUF/snapshots"
+        return ((try? fm.contentsOfDirectory(atPath: cache)) ?? []).contains { fm.fileExists(atPath: cache + "/" + $0 + "/" + Config.modelFile) }
+    }
+
     /// Where the model file is: Cedar's own folder, a copy Hugging Face tools already downloaded, or a download now.
     public static func modelFile(log: (String) -> Void = { _ in }) -> String? {
         let fm = FileManager.default

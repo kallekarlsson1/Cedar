@@ -70,6 +70,7 @@ public enum Config {
         // (".noindex" folders are skipped by macOS convention: Spotlight leaves them alone too.)
         name.hasPrefix(".") || name.hasSuffix(".noindex") || skipNames.contains(name) || skipPaths.contains(path)
             || packages.contains(ext(name))
+            || Settings.current.excluded.contains(path)
     }
 
     /// True for a file that's only in iCloud (not downloaded). Its name is searchable; its contents are never read,
