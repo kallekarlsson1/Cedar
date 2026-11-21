@@ -21,8 +21,13 @@ class Embedder:
         import torch
         from sentence_transformers import SentenceTransformer
         device = "mps" if torch.backends.mps.is_available() else "cpu"
-        self.model = SentenceTransformer(config.MODEL, device=device,
-                                         model_kwargs={"torch_dtype": torch.float16 if device == "mps" else torch.float32})
+        kwargs = dict(device=device, model_kwargs={"torch_dtype": torch.float16 if device == "mps" else torch.float32})
+        try:
+            # Once downloaded, the model loads without going online.
+            self.model = SentenceTransformer(config.MODEL, local_files_only=True, **kwargs)
+        except Exception:
+            log("downloading the model (once)")
+            self.model = SentenceTransformer(config.MODEL, **kwargs)
         self.model.max_seq_length = 512
         self.query(["warm up"])
         self.ready.set()
