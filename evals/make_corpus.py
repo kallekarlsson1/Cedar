@@ -1,5 +1,5 @@
 """Generates the test library in evals/corpus.noindex: papers with author blocks and reference lists, notes,
-a duplicate, a text copy of a PDF and an image-only PDF. All names, titles and findings are invented.
+a duplicate, a text copy of a PDF and an image-only PDF. All names, titles and abstracts are invented; the body text is lorem ipsum.
 
     uvx --with pymupdf python evals/make_corpus.py evals/corpus.noindex
 """
@@ -60,17 +60,41 @@ NOTES = [
 ]
 
 
+LOREM = ("Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et "
+         "dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex "
+         "ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu "
+         "fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt "
+         "mollit anim id est laborum. Curabitur pretium tincidunt lacus, nulla gravida orci a odio. Nullam varius, "
+         "turpis et commodo pharetra, est eros bibendum elit, nec luctus magna felis sollicitudin mauris. Integer in "
+         "mauris eu nibh euismod gravida. Duis ac tellus et risus vulputate vehicula. Donec lobortis risus a elit. "
+         "Etiam tempor. Ut ullamcorper, ligula eu tempor congue, eros est euismod turpis, id tincidunt sapien risus "
+         "a quam. Maecenas fermentum consequat mi. Donec fermentum. Pellentesque malesuada nulla a mi. Duis sapien "
+         "sem, aliquet nec, commodo eget, consequat quis, neque. Aliquam faucibus, elit ut dictum aliquet, felis "
+         "nisl adipiscing sapien, sed malesuada diam lacus eget erat.").split(". ")
+
+
+def filler(seed: str, sentences: int) -> str:
+    """Placeholder body text, in a different sentence order for each document."""
+    order = sorted(range(len(LOREM)), key=lambda i: hash_of(seed, i))
+    return ". ".join(LOREM[order[i % len(order)]].rstrip(".") for i in range(sentences)) + "."
+
+
+def hash_of(seed: str, i: int) -> int:
+    import zlib
+    return zlib.crc32(f"{seed}-{i}".encode())
+
+
 def paper(path: Path, title: str, authors: list[str], year: int, about: str, scanned: bool = False):
     doc = pymupdf.open()
     page = doc.new_page()
     page.insert_textbox(pymupdf.Rect(60, 60, 535, 130), title, fontsize=18, fontname="hebo", align=1)
     page.insert_textbox(pymupdf.Rect(60, 135, 535, 190), "\n".join(authors) + f"\nUniversity of Somewhere, {year}",
                         fontsize=10, align=1)
-    body = "Abstract\n" + about + "\n\n1 Introduction\n" + " ".join([about] * 4) + \
+    body = "Abstract\n" + about + "\n\n1 Introduction\n" + filler(title, 16) + \
            " Earlier work by Halvorsen et al. and by Brennan frames the question."
     page.insert_textbox(pymupdf.Rect(60, 200, 535, 780), body, fontsize=10)
     page2 = doc.new_page()
-    page2.insert_textbox(pymupdf.Rect(60, 60, 535, 400), "2 Results\n" + " ".join([about] * 3), fontsize=10)
+    page2.insert_textbox(pymupdf.Rect(60, 60, 535, 400), "2 Results\n" + filler(title + "results", 14), fontsize=10)
     page2.insert_textbox(pymupdf.Rect(60, 420, 535, 780), "References\n" + "\n".join(CITES), fontsize=9)
     if scanned:   # rasterize the pages so there is no text layer
         flat = pymupdf.open()

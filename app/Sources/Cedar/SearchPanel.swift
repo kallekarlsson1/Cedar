@@ -409,7 +409,14 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
             switch key {
             case "y": preview(); return true
             case "c" where (field.currentEditor()?.selectedRange.length ?? 0) == 0:
-                copySelected(); return true
+                // Text selected in the reader takes priority over copying the file.
+                if let text = detail.selectedText, !text.isEmpty {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                } else {
+                    copySelected()
+                }
+                return true
             default: break
             }
         }
@@ -717,6 +724,16 @@ final class DetailView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    /// Text the user has selected in the reader, if any.
+    var selectedText: String? {
+        if !reader.isHidden { return reader.currentSelection?.string }
+        if !noteScroll.isHidden {
+            let range = noteText.selectedRange()
+            return range.length > 0 ? (noteText.string as NSString).substring(with: range) : nil
+        }
+        return nil
+    }
 
     private enum Mode { case pdf, note, quickLook, icon, text }
 
