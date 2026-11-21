@@ -31,7 +31,7 @@ Everything runs on your Mac. Your files and what you type are never sent anywher
 
 ## Install
 
-You need an Apple Silicon Mac with macOS 14 or later.
+You need an Apple Silicon Mac with macOS 14 or later. Nothing else has to be installed.
 
 1. Download `Cedar-x.y.z.dmg` from [Releases](https://github.com/kallekarlsson1/Cedar/releases/latest).
 2. Open it and drag Cedar to Applications.
@@ -89,9 +89,10 @@ helper that holds the model.
 Documents older than two years only get their first pages embedded until you open them. All their words are
 still searchable.
 
-## Build from source
+## For developers: build from source
 
-You need the Xcode Command Line Tools, git, and cmake (or [uv](https://docs.astral.sh/uv/)).
+None of this is needed to use Cedar; the download above is all a user needs. To build it yourself you need
+the Xcode Command Line Tools, git, and cmake (or [uv](https://docs.astral.sh/uv/)).
 
 ```sh
 ./build.sh
