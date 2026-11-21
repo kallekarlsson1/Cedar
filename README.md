@@ -1,7 +1,17 @@
-# Cedar
+<p align="center"><img src="app/Resources/AppIcon.png" width="128" alt="Cedar icon"></p>
 
-A search bar for the Mac that looks inside your documents. Press ⌘Space, type what you remember, and read the
-result right there.
+<h1 align="center">Cedar</h1>
+
+<p align="center">A search bar for the Mac that looks inside your documents.<br>
+Press ⌘Space, type what you remember, and read the result right there.</p>
+
+<p align="center"><a href="https://github.com/kallekarlsson1/Cedar/releases/latest"><b>Download for Mac</b></a></p>
+
+<p align="center">
+<a href="https://github.com/kallekarlsson1/Cedar/releases/latest"><img src="https://img.shields.io/github/v/release/kallekarlsson1/Cedar?style=flat-square" alt="Latest release"></a>
+<a href="LICENSE"><img src="https://img.shields.io/github/license/kallekarlsson1/Cedar?style=flat-square" alt="MIT license"></a>
+<img src="https://img.shields.io/badge/macOS-14%2B%20·%20Apple%20Silicon-lightgrey?style=flat-square" alt="macOS 14 or later, Apple Silicon">
+</p>
 
 Spotlight treats every word in a PDF the same, so searching for an author returns every paper that cites them
 and buries the one they wrote. Cedar was built to fix that.
