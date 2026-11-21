@@ -1,5 +1,5 @@
 """Generates the test library in evals/corpus.noindex: papers with author blocks and reference lists, notes,
-a duplicate, a text copy of a PDF and an image-only PDF. All names, titles and abstracts are invented; the body text is lorem ipsum.
+a duplicate, a text copy of a PDF and an image-only PDF. Generic made-up titles, names and abstracts; the body text is lorem ipsum.
 
     uvx --with pymupdf python evals/make_corpus.py evals/corpus.noindex
 """
@@ -11,50 +11,49 @@ import pymupdf
 
 # (file name, title, authors, year, abstract)
 PAPERS = [
-    ("halvorsen_plural.pdf", "Human Reasoning under Plural Assistant Support", ["Mira Halvorsen", "Tobias Renner"], 2026,
-     "We study how people solve mathematics problems and write essays when several language models help them at "
-     "the same time. Participants who consulted multiple assistants compared the answers and relied less on any "
-     "single one. Open-ended writing became more varied, while arithmetic accuracy stayed the same."),
-    ("report-0193.pdf", "Quiet Saboteurs: Flattering Assistants Mislead Beginners", ["Noor Castellan", "Eamon Park"], 2025,
-     "Assistants that flatter the user and agree with wrong ideas harm beginners during debugging tasks. Novices "
-     "who received agreeable but incorrect feedback kept their mistakes longer than those who were challenged."),
-    ("debate_judges.pdf", "Adversarial Debate Helps Judges Find the Truth", ["Lucien Marsh", "Odile Farrow"], 2023,
-     "Two experts argue opposite sides of a reading comprehension question while a judge without access to the "
-     "story decides who is right. Judges reach the truth more often from an adversarial exchange than from a "
-     "single consultant."),
-    ("conformity_online.pdf", "Social Presence and Conformity in Online Quizzes", ["Ilse Drummond"], 2020,
-     "People change their quiz answers to match the majority shown on screen. The effect grows with the size of "
-     "the group and shrinks when answers are anonymous."),
-    ("worked_examples.pdf", "Learning from Erroneous Examples in the Physics Classroom", ["Karim Belhadj"], 2020,
-     "Eighth graders studying electric circuits diagnosed mistakes in flawed solutions. Contrasting incorrect "
-     "solutions with correct ones improved conceptual understanding more than studying correct ones alone."),
-    ("glacier_melt.pdf", "Meltwater Routing beneath Alpine Glaciers", ["Ingrid Solheim", "Paolo Ferrante"], 2019,
-     "Dye tracing shows that water under mountain ice moves through channels that reorganize every summer. "
-     "Drainage speed controls how fast the ice slides downhill."),
-    ("sourdough.pdf", "Microbial Succession in Sourdough Starters", ["Mei Tanaka"], 2021,
-     "Wild yeast and lactic acid bacteria replace each other over the first two weeks of a flour and water "
-     "culture. Feeding schedule and temperature decide which species dominate and how sour the bread tastes."),
-    ("bee_navigation.pdf", "Path Integration in Foraging Honeybees", ["Tomasz Zielinski", "Mira Halvorsen"], 2018,
-     "Bees returning to the hive estimate distance from the image motion they experience in flight. Narrow "
-     "tunnels with patterned walls make them overestimate how far they have flown."),
-    ("rust_async.pdf", "Cancellation Safety in Asynchronous Rust", ["Dana Whitfield"], 2024,
-     "Dropping a future at an await point can leave shared state half-updated. We classify library functions by "
-     "whether interruption loses data and propose a lint that flags unsafe select branches."),
-    ("sleep_memory.pdf", "Slow-Wave Sleep and Vocabulary Retention", ["Aoife Brennan"], 2017,
-     "Students who napped after studying foreign words remembered more a week later. Time spent in deep sleep "
-     "predicted the benefit; total nap length did not."),
+    ("smith_cycling.pdf", "Commuting by Bicycle in Mid-Sized Cities", ["John Smith", "Maria Garcia"], 2026,
+     "We asked office workers in three towns how they travel to work. People who cycled arrived on time more "
+     "often than those who drove, and reported feeling more awake in the morning. Rain was the main reason for "
+     "leaving the bike at home."),
+    ("report-0193.pdf", "Watering Schedules for Indoor Tomato Plants", ["Anna Lee", "David Brown"], 2025,
+     "Tomato plants on a windowsill were watered daily, every third day, or weekly. Plants watered every third "
+     "day gave the most fruit. Daily watering caused yellow leaves and root rot."),
+    ("office_noise.pdf", "Noise Levels in Open-Plan Offices", ["Emma Wilson", "James Taylor"], 2023,
+     "Sound meters recorded a week of conversations, phone calls and keyboard clatter in a shared workspace. "
+     "Staff seated near the kitchen made more mistakes in a proofreading task than staff in quiet corners."),
+    ("phone_battery.pdf", "Battery Life of Budget Smartphones", ["Sarah Johnson"], 2020,
+     "Twelve low-cost handsets played video on repeat until they shut down. Screen brightness mattered more "
+     "than processor speed, and two models lasted a full day."),
+    ("night_reading.pdf", "Reading Habits of Night-Shift Workers", ["Michael Davis"], 2020,
+     "Nurses and security guards kept diaries of what they read during breaks. Short stories and news were "
+     "preferred over novels, and most reading happened on a phone."),
+    ("snow_depth.pdf", "Snow Depth Measurements on a Mountain Pass", ["Laura Martin", "Peter Clark"], 2019,
+     "A row of marked poles was photographed every morning for one winter. Wind moved more snow than fell from "
+     "the sky, and drifts on the eastern side were twice as deep."),
+    ("bread_fermentation.pdf", "Fermentation Times for Homemade Bread", ["Lisa White"], 2021,
+     "Dough was left to rise for two, eight or twenty hours before baking. Longer rising gave a sourer taste "
+     "and larger holes in the crumb, and a cool kitchen slowed everything down."),
+    ("garden_bees.pdf", "How Garden Bees Find Their Way Home", ["Peter Clark", "John Smith"], 2018,
+     "Marked bees were carried in a box to different spots around a village and released. Most returned to the "
+     "hive within an hour unless they were let go beyond the river."),
+    ("background_jobs.pdf", "Handling Interrupted Tasks in Background Jobs", ["David Brown"], 2024,
+     "A program that is stopped halfway through saving can leave its data half-written. We list the steps "
+     "where stopping loses data and suggest writing to a temporary file first."),
+    ("naps_recall.pdf", "Afternoon Naps and Word Recall", ["Jane Doe"], 2017,
+     "Students who slept for half an hour after studying a list of foreign words remembered more of them a "
+     "week later than students who stayed awake."),
 ]
-# Every paper cites Halvorsen, who is an author of only two.
-CITES = ["Halvorsen, M., & Renner, T. (2026). Human reasoning under plural assistant support. Proceedings of the Made-Up Conference.",
-         "Brennan, A. (2017). Slow-wave sleep and vocabulary retention. Journal of Sleep Research.",
-         "Marsh, L. (2023). Adversarial debate helps judges find the truth. Invented Preprints."]
+# Every paper cites Smith, who is an author of only two.
+CITES = ["Smith, J., & Garcia, M. (2026). Commuting by bicycle in mid-sized cities. Example Journal.",
+         "Doe, J. (2017). Afternoon naps and word recall. Example Journal.",
+         "Wilson, E. (2023). Noise levels in open-plan offices. Example Reports."]
 NOTES = [
-    ("Meeting notes 12 March.md", "# Meeting notes 12 March\n\nBudget for the field trip approved. Lena books the "
+    ("Meeting notes 12 March.md", "# Meeting notes 12 March\n\nBudget for the field trip approved. Alex books the "
      "minibus; invoice number INV-20417 goes to accounting. Next meeting in April.\n"),
     ("Recipe - cardamom buns.md", "# Cardamom buns\n\nWarm the milk, crumble in the yeast, knead in butter and "
      "crushed cardamom. Proof twice, bake at 225 degrees for eight minutes.\n"),
-    ("Reading list.md", "---\ntitle: Reading list for the seminar\nauthor: someone\n---\n\n- Halvorsen on several "
-     "assistants\n- Marsh on debate\n- the sourdough paper, for fun\n"),
+    ("Reading list.md", "---\ntitle: Reading list for the seminar\nauthor: someone\n---\n\n- Smith on cycling\n"
+     "- Wilson on office noise\n- the bread paper, for fun\n"),
     ("Anteckningar svenska.md", "# Anteckningar om isbildning\n\nSjöisen lägger sig först i vikarna. Tjockleken "
      "mäts med borr varje vecka under vintern.\n"),
 ]
@@ -91,7 +90,7 @@ def paper(path: Path, title: str, authors: list[str], year: int, about: str, sca
     page.insert_textbox(pymupdf.Rect(60, 135, 535, 190), "\n".join(authors) + f"\nUniversity of Somewhere, {year}",
                         fontsize=10, align=1)
     body = "Abstract\n" + about + "\n\n1 Introduction\n" + filler(title, 16) + \
-           " Earlier work by Halvorsen et al. and by Brennan frames the question."
+           " Earlier work by Smith et al. and by Doe frames the question."
     page.insert_textbox(pymupdf.Rect(60, 200, 535, 780), body, fontsize=10)
     page2 = doc.new_page()
     page2.insert_textbox(pymupdf.Rect(60, 60, 535, 400), "2 Results\n" + filler(title + "results", 14), fontsize=10)
@@ -111,11 +110,11 @@ def main(out: Path):
     for name, title, authors, year, about in PAPERS:
         paper(out / "papers" / name, title, authors, year, about)
     # A duplicate, a text copy and a scan.
-    paper(out / "papers" / "halvorsen_plural (1).pdf", *PAPERS[0][1:])
-    (out / "notes" / "halvorsen_plural.txt").write_text(PAPERS[0][1] + "\n" + "\n".join(PAPERS[0][2]) + "\n" + " ".join([PAPERS[0][4]] * 6))
-    paper(out / "papers" / "scan_0042.pdf", "Tidal Mills of the Brittany Coast", ["Yann Le Goff"], 1998,
-          "Medieval millers stored seawater behind a dike at high tide and released it through a wheel as the "
-          "sea fell. Surviving ledgers record how much grain each mill ground per lunar month.", scanned=True)
+    paper(out / "papers" / "smith_cycling (1).pdf", *PAPERS[0][1:])
+    (out / "notes" / "smith_cycling.txt").write_text(PAPERS[0][1] + "\n" + "\n".join(PAPERS[0][2]) + "\n" + " ".join([PAPERS[0][4]] * 6))
+    paper(out / "papers" / "scan_0042.pdf", "Water Mills on a Tidal River", ["Thomas Green"], 1998,
+          "Millers stored water behind a gate at high tide and let it out through a wheel as the river fell. "
+          "Old account books record how many sacks of grain each mill ground per month.", scanned=True)
     for name, text in NOTES:
         (out / "notes" / name).write_text(text)
     print("wrote", sum(1 for _ in out.rglob("*") if _.is_file()), "files to", out)
