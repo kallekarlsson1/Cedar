@@ -333,7 +333,10 @@ class Content:
         for d in candidates:
             z = meaning.get(d, (0.0, None))[0]
             w = words.get(d, 0.0)
-            scored.append((max(z, 0) + WORD_WEIGHT * w ** 1.5 + strength.get(d, 0.0) + kinds.get(d, 0.0), d))
+            # Meaning counts only where a passage stands out; a near-miss adds nothing (and while indexing is under
+            # way it would favor whichever documents happen to be embedded already).
+            meant = z if z >= Z_GATE else 0.0
+            scored.append((meant + WORD_WEIGHT * w ** 1.5 + strength.get(d, 0.0) + kinds.get(d, 0.0), d))
         scored.sort(reverse=True)
 
         out = []
