@@ -12,6 +12,22 @@ Press ⌘Space and type what you remember. Cedar answers on every keystroke:
 - **Document contents**: PDFs (scanned ones too), Word, PowerPoint, Excel, Markdown, text, HTML and LaTeX. Each result shows the page
   and the passage that matched.
 
+## Install
+
+Download `Cedar-x.y.z.dmg` from [Releases](https://github.com/kallekarlsson1/Cedar/releases/latest), open it and
+drag Cedar to Applications. It needs an Apple Silicon Mac with macOS 14 or later.
+
+Cedar isn't signed with an Apple Developer certificate, so the first time you open it macOS says it can't check
+it. Open **System Settings → Privacy & Security**, scroll down to the message about Cedar and click
+**Open Anyway**. (Or, in Terminal: `xattr -dr com.apple.quarantine /Applications/Cedar.app`.) You only do this once
+per version. Each `.dmg` comes with a `.sha256` file if you want to check the download.
+
+On first run Cedar downloads its model (640 MB) and starts reading your files; the welcome window shows progress
+and how to give Cedar ⌘Space.
+
+To remove it: quit Cedar, delete it from Applications, and delete `~/Library/Application Support/Cedar` (the
+model and the index).
+
 ## Why
 
 Spotlight treats every word in a PDF the same. A paper by Halvorsen gets buried under all the papers that only *cite*
@@ -88,6 +104,16 @@ Then turn off Spotlight's shortcut in System Settings → Keyboard → Keyboard 
 Cedar. You can pick another shortcut from Cedar's menu bar icon instead.
 
 From a terminal: `Cedar.app/Contents/MacOS/Cedar --search "halvorsen plural llm"` and `--status`.
+
+## Releasing
+
+`scripts/release.sh 0.2.0` runs the quality check, builds the app and writes `dist/Cedar-0.2.0.dmg`; with
+`--publish` it also tags the version and uploads the disk image to GitHub Releases. `scripts/make-icon.swift`
+draws the icon.
+
+## License
+
+MIT. See [LICENSE](LICENSE), and `app/Resources/Acknowledgements.txt` for llama.cpp and the model.
 
 ## Keys
 

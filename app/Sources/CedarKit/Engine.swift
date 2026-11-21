@@ -179,7 +179,9 @@ public final class Engine {
                 lock.lock(); rate = rate == 0 ? now : rate * 0.9 + now * 0.1; lock.unlock()
             }
             if done == 0 {
-                if idle > Self.idleBeforeUnload {
+                let left = content.progress()
+                let moreAllowed = left.first_pass_left > 0 || (left.to_embed > 0 && !battery)
+                if idle > Self.idleBeforeUnload && !moreAllowed {
                     model.unload(log: logLine)
                     content.releaseVectors()
                     checked = nil
@@ -275,6 +277,9 @@ public final class Engine {
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let pathBytes = Array(Config.socket.utf8CString)
+        guard pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path) else {
+            logLine("the path to Cedar's folder is too long for a socket: \(Config.socket)"); _exit(1)
+        }
         withUnsafeMutableBytes(of: &addr.sun_path) { raw in for (i, b) in pathBytes.enumerated() where i < raw.count { raw[i] = UInt8(bitPattern: b) } }
         let old = umask(0o077)                   // the socket is usable by this user only
         let bound = withUnsafePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } }
