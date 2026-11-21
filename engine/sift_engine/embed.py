@@ -34,18 +34,18 @@ class Embedder:
         try:
             with self._lock:
                 return self.model.encode(texts, prompt_name="query", normalize_embeddings=True,
-                                         convert_to_numpy=True).astype(np.float32)
+                                         convert_to_numpy=True, show_progress_bar=False).astype(np.float32)
         finally:
             with self._count_lock:
                 self._waiting_queries -= 1
 
     def documents(self, texts: list[str]) -> np.ndarray:
-        # Small steps, so a search never waits behind more than a few passages (~0.3 s), and waiting searches go first.
+        # Small steps, so a search never waits behind more than a few passages (~0.15 s), and waiting searches go first.
         out = []
-        for i in range(0, len(texts), 4):
+        for i in range(0, len(texts), 2):
             while self._waiting_queries:
                 threading.Event().wait(0.005)
             with self._lock:
-                out.append(self.model.encode(texts[i:i + 4], batch_size=4, normalize_embeddings=True,
-                                             convert_to_numpy=True).astype(np.float16))
+                out.append(self.model.encode(texts[i:i + 2], batch_size=2, normalize_embeddings=True,
+                                             convert_to_numpy=True, show_progress_bar=False).astype(np.float16))
         return np.concatenate(out) if out else np.zeros((0, DIM), np.float16)

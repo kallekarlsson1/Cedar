@@ -67,7 +67,8 @@ class Names:
         self.lock = threading.Lock()
 
     def count(self) -> int:
-        return self.db.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
+        with self.lock:
+            return self.db.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
 
     def rebuild(self, log=print):
         """Lists everything again into fresh tables, then swaps them in; searches keep working meanwhile."""

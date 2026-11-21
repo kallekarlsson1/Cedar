@@ -51,14 +51,31 @@ KIND_PRIOR = {".pdf": 0.4, ".docx": 0.35, ".pptx": 0.35, ".xlsx": 0.2, ".doc": 0
               ".txt": 0.0, ".html": 0.05, ".htm": 0.05}
 
 
+# Words in nearly every document: they cost the most to look up and say nothing about which document is meant. The
+# meaning search still reads them.
+STOPWORDS = set("""
+a an the and or but if of to in on at by for with from into about as is are was were be been being it its this that
+these those there here what which who whom whose when where why how i me my we our you your he she they them their
+his her not no yes do does did done can could would should will shall may might must have has had having than then
+so such very more most some any all each every both few other also just only own same too s t up down out over under
+again further once using use used paper document file one two thing things like
+och att det som en ett är på för med av till den de om inte har var jag du vi ni han hon men så kan ska från eller
+när där hur vad vem vilken vilket vilka också bara efter under över mellan
+""".split())
+
+
 class Content:
-    def __init__(self, embedder: Embedder):
+    def __init__(self, embedder: Embedder | None, vectors: bool = True):
+        """`vectors=False`: for the reader process, which only writes passages and never searches by meaning."""
         config.DATA.mkdir(parents=True, exist_ok=True)
         self.embedder = embedder
         self._local = threading.local()
         self.db.executescript(SCHEMA)
         self.vec_lock = threading.Lock()
-        self._load_vectors()
+        self.rows = 0
+        self.dead_docs: set[int] = set()
+        if vectors:
+            self._load_vectors()
 
     @property
     def db(self) -> sqlite3.Connection:
@@ -85,7 +102,14 @@ class Content:
             self.row_chunk[i] = cid
             self.row_doc[i] = doc
         self.rows = n
-        self.dead_docs: set[int] = set()
+        self.dead_docs = set()
+
+    def forget_deleted(self):
+        """Drops from meaning search the documents another process deleted."""
+        live = {d for (d,) in self.db.execute("SELECT id FROM docs")}
+        with self.vec_lock:
+            present = set(np.unique(self.row_doc[: self.rows]).tolist())
+        self.dead_docs = present - live
 
     def _append_vectors(self, chunk_ids, doc_ids, vecs):
         with self.vec_lock:
@@ -203,7 +227,8 @@ class Content:
     # ---- search -----------------------------------------------------------------------------------------------
 
     def search(self, query: str, deep: bool, limit: int = 15) -> list[dict]:
-        terms = re.findall(r"\w+", query.lower())
+        every = re.findall(r"\w+", query.lower())
+        terms = [t for t in every if t not in STOPWORDS] or every
         if not terms:
             return []
         typing_last = not query.endswith(" ")
@@ -237,7 +262,7 @@ class Content:
 
         # Meaning: every passage scored, put on this query's scale, best passage per document.
         meaning: dict[int, tuple[float, int]] = {}
-        if deep and self.embedder.ready.is_set() and self.rows > 50:
+        if deep and self.embedder and self.embedder.ready.is_set() and self.rows > 50:
             q = self.embedder.query([query])[0]
             with self.vec_lock:
                 n = self.rows
