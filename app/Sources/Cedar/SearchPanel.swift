@@ -633,6 +633,8 @@ final class ResultCell: NSView {
 /// rest), then what the file is and where it lives.
 final class DetailView: NSView {
     private let previewArea = NSView()
+    private let noteScroll = NSScrollView()    // a Markdown note, formatted
+    private let noteText = NSTextView()
     private let reader = PDFView()             // the whole PDF, scrolling, opened at the page that matched
     private let quickLook: QLPreviewView = QLPreviewView(frame: .zero, style: .compact)!
     private let bigIcon = NSImageView()
@@ -653,11 +655,26 @@ final class DetailView: NSView {
         reader.wantsLayer = true
         reader.layer?.cornerRadius = 8
         reader.layer?.masksToBounds = true
+        noteText.isEditable = false
+        noteText.isSelectable = true
+        noteText.drawsBackground = false
+        noteText.textContainerInset = NSSize(width: 26, height: 22)
+        noteText.isVerticallyResizable = true
+        noteText.autoresizingMask = [.width]
+        noteText.textContainer?.widthTracksTextView = true
+        noteScroll.documentView = noteText
+        noteScroll.hasVerticalScroller = true
+        noteScroll.autohidesScrollers = true
+        noteScroll.drawsBackground = true
+        noteScroll.backgroundColor = NSColor.textBackgroundColor.withAlphaComponent(0.55)
+        noteScroll.wantsLayer = true
+        noteScroll.layer?.cornerRadius = 8
+        noteScroll.layer?.masksToBounds = true
         quickLook.shouldCloseWithWindow = false
         bigIcon.imageScaling = .scaleProportionallyUpOrDown
         bigText.font = .systemFont(ofSize: 30, weight: .medium)
         bigText.alignment = .center
-        for v in [reader, quickLook, bigIcon, bigText] as [NSView] {
+        for v in [reader, noteScroll, quickLook, bigIcon, bigText] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             previewArea.addSubview(v)
         }
@@ -666,6 +683,10 @@ final class DetailView: NSView {
             reader.bottomAnchor.constraint(equalTo: previewArea.bottomAnchor),
             reader.leadingAnchor.constraint(equalTo: previewArea.leadingAnchor),
             reader.trailingAnchor.constraint(equalTo: previewArea.trailingAnchor),
+            noteScroll.topAnchor.constraint(equalTo: previewArea.topAnchor),
+            noteScroll.bottomAnchor.constraint(equalTo: previewArea.bottomAnchor),
+            noteScroll.leadingAnchor.constraint(equalTo: previewArea.leadingAnchor),
+            noteScroll.trailingAnchor.constraint(equalTo: previewArea.trailingAnchor),
             quickLook.topAnchor.constraint(equalTo: previewArea.topAnchor),
             quickLook.bottomAnchor.constraint(equalTo: previewArea.bottomAnchor),
             quickLook.leadingAnchor.constraint(equalTo: previewArea.leadingAnchor),
@@ -716,10 +737,11 @@ final class DetailView: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    private enum Mode { case pdf, quickLook, icon, text }
+    private enum Mode { case pdf, note, quickLook, icon, text }
 
     private func use(_ mode: Mode) {
         reader.isHidden = mode != .pdf
+        noteScroll.isHidden = mode != .note
         quickLook.isHidden = mode != .quickLook
         bigIcon.isHidden = mode != .icon
         bigText.isHidden = mode != .text
@@ -728,6 +750,7 @@ final class DetailView: NSView {
     func show(_ item: Item?, query: String) {
         isHidden = item == nil
         loading += 1
+        lastQuery = query
         guard let item else { return }
         hint.stringValue = "↩ Open   ⌘↩ Finder   ⌘C Copy"
         switch item {
@@ -767,8 +790,25 @@ final class DetailView: NSView {
     }
 
     private func showQuickLook(_ path: String) {
+        if ["md", "markdown"].contains((path as NSString).pathExtension.lowercased()), showNote(path) { return }
         use(.quickLook)
         quickLook.previewItem = URL(fileURLWithPath: path) as NSURL
+    }
+
+    /// A Markdown note, formatted, scrolled to the first of the words you typed.
+    private var lastQuery = ""
+    private func showNote(_ path: String) -> Bool {
+        guard let data = FileManager.default.contents(atPath: path), data.count < 3_000_000 else { return false }
+        let words = lastQuery.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+        let text = Markdown.render(String(decoding: data, as: UTF8.self), highlight: words)
+        use(.note)
+        noteText.textStorage?.setAttributedString(text)
+        var target = NSRange(location: 0, length: 0)
+        text.enumerateAttribute(.backgroundColor, in: NSRange(location: 0, length: text.length)) { value, range, stop in
+            if let c = value as? NSColor, c.alphaComponent > 0.3 { target = range; stop.pointee = true }
+        }
+        noteText.scrollRangeToVisible(target)
+        return true
     }
 
     /// The document in the reader, scrolled to the page that matched, with the words you typed marked on it.
