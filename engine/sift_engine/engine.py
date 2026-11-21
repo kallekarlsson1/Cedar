@@ -30,20 +30,7 @@ IDLE_BEFORE_UNLOAD = 120.0     # with nothing left to embed, free the model afte
                                # (it's back in 0.3 s, so there's no reason to hold 0.6 GB for longer)
 
 
-_power = {"checked": 0.0, "battery": False}
-
-
-def on_battery() -> bool:
-    """True when the Mac runs on battery (checked once a minute). On battery Sift embeds only titles and first
-    pages, a few passages per new document; the long tail waits for the charger, as Spotlight's indexing does."""
-    if time.time() - _power["checked"] > 60:
-        try:
-            out = subprocess.run(["/usr/bin/pmset", "-g", "batt"], capture_output=True, text=True, timeout=5).stdout
-            _power["battery"] = "Battery Power" in out
-        except Exception:
-            _power["battery"] = False
-        _power["checked"] = time.time()
-    return _power["battery"]
+on_battery = config.on_battery
 
 
 # ---- reader process ---------------------------------------------------------------------------------------------
@@ -92,12 +79,15 @@ class Reader:
             self.woke.clear()
             time.sleep(2)                        # let a burst of changes (a download, a save) finish
             self._apply_changes()
+            if self.content.read_scans(log=log.info):      # scans that waited for the charger
+                self._more_work()
             if time.time() - last_full > 7 * 24 * 3600:   # a safety net; changes arrive live
                 self._relist()
                 last_full = time.time()
 
     def _sync(self):
         self.content.sync(self._wanted(), log=log.info)
+        self.content.read_scans(log=log.info)
         self.content.mark_copies(log=log.info)
         self._more_work()
 
@@ -114,7 +104,8 @@ class Reader:
         with self.names.lock:
             rows = self.names.db.execute(
                 "SELECT path, name, mtime, size FROM entries WHERE is_dir = 0 AND crowded = 0").fetchall()
-        return {p: (m, s) for p, name, m, s in rows if name.lower().endswith(exts)}
+        # Files that are only in iCloud keep their names searchable; their contents aren't read (no downloads).
+        return {p: (m, s) for p, name, m, s in rows if name.lower().endswith(exts) and not config.is_dataless(p)}
 
     def _watch(self):
         from watchdog.events import FileSystemEventHandler
@@ -145,7 +136,7 @@ class Reader:
             p = Path(path)
             if os.path.lexists(path):
                 self.names.upsert(path)
-                if p.suffix.lower() in config.DOC_EXTS and p.is_file():
+                if p.suffix.lower() in config.DOC_EXTS and p.is_file() and not config.is_dataless(path):
                     st = p.stat()
                     known = self.content.db.execute("SELECT mtime FROM docs WHERE path = ?", (path,)).fetchone()
                     if not known or known[0] != st.st_mtime:
@@ -163,7 +154,9 @@ class Reader:
 def _ignored(p: Path) -> bool:
     if any(part.startswith(".") for part in p.parts[1:]) or any(part in config.SKIP_NAMES for part in p.parts):
         return True
-    if any(p.is_relative_to(s) for s in config.SKIP_PATHS):
+    if p.is_relative_to(config.ICLOUD):
+        p = p.relative_to(config.ICLOUD)            # iCloud Drive is inside ~/Library but wanted
+    elif any(p.is_relative_to(s) for s in config.SKIP_PATHS):
         return True
     return any(os.path.splitext(part)[1].lower() in config.PACKAGES for part in p.parts[:-1])
 

@@ -4,7 +4,8 @@ import os
 from pathlib import Path
 
 HOME = Path.home()
-DATA = HOME / "Library" / "Application Support" / "Sift"
+# SIFT_DATA and SIFT_ROOTS point a test run at its own index and folders (evals/, tests/).
+DATA = Path(os.environ["SIFT_DATA"]) if os.environ.get("SIFT_DATA") else HOME / "Library" / "Application Support" / "Sift"
 SOCKET = DATA / "engine.sock"
 NAMES_DB = DATA / "names.db"
 CONTENT_DB = DATA / "content.db"
@@ -19,9 +20,42 @@ VECTORS = "Qwen3-Embedding-0.6B | 512 tokens | v1"
 COMPATIBLE = {"Qwen/Qwen3-Embedding-0.6B | sentence-transformers fp16 | v1"}
 
 
+ICLOUD = HOME / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
+
+
+def is_dataless(path: str) -> bool:
+    """True for a file that's only in iCloud (not downloaded). Its name is searchable; its contents are never
+    read, because reading would make macOS download it."""
+    try:
+        return bool(os.stat(path, follow_symlinks=False).st_flags & 0x40000000)   # SF_DATALESS
+    except (OSError, AttributeError):
+        return False
+
+
+_power = {"checked": 0.0, "battery": False}
+
+
+def on_battery() -> bool:
+    """True when the Mac runs on battery (checked once a minute). Heavy work waits for the charger."""
+    import subprocess
+    import time
+    if time.time() - _power["checked"] > 60:
+        try:
+            out = subprocess.run(["/usr/bin/pmset", "-g", "batt"], capture_output=True, text=True, timeout=5).stdout
+            _power["battery"] = "Battery Power" in out
+        except Exception:
+            _power["battery"] = False
+        _power["checked"] = time.time()
+    return _power["battery"]
+
+
 def roots() -> list[Path]:
     """Everything a person would look for: the home folder, apps, and plugged-in drives."""
+    if os.environ.get("SIFT_ROOTS"):
+        return [Path(p) for p in os.environ["SIFT_ROOTS"].split(":")]
     out = [HOME, Path("/Applications")]
+    if ICLOUD.is_dir():
+        out.append(ICLOUD)          # iCloud Drive lives inside ~/Library, which is otherwise skipped
     volumes = Path("/Volumes")
     if volumes.is_dir():
         for v in volumes.iterdir():

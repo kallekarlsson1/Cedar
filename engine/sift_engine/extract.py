@@ -8,6 +8,8 @@ Every passage belongs to a region:
 """
 
 import html
+import json
+import os
 import re
 import subprocess
 import zipfile
@@ -37,6 +39,7 @@ class Document:
     pages: int | None
     passages: list[Passage]
     embed: bool = True   # False: keyword search only (number tables, text dumps of PDFs)
+    pending_ocr: bool = False   # scanned pages still to be read (waiting for the charger)
 
 
 ABSTRACT = re.compile(r"^\s*(abstract|a b s t r a c t|summary|introduction|1\.?\s+introduction|sammanfattning)\b",
@@ -77,6 +80,16 @@ def _pdf(path: Path) -> Document | None:
     title = _pdf_title(doc)
     doc.close()
 
+    # Scanned pages have no text of their own: Apple's on-device text recognition reads them.
+    pending = False
+    blank = [i + 1 for i, t in enumerate(pages) if len(t.strip()) < 30][:OCR_PAGE_LIMIT]
+    if blank and os.environ.get("SIFT_APP"):
+        if config.on_battery():
+            pending = len(blank) > len(pages) * 0.5     # a scan; it's read when the charger is in
+        else:
+            for number, text in ocr(str(path), blank).items():
+                pages[number - 1] = text
+
     passages: list[Passage] = []
     first = pages[0] if pages else ""
     m = ABSTRACT.search(first)
@@ -102,7 +115,27 @@ def _pdf(path: Path) -> Document | None:
             passages += [Passage("refs", i + 1, t) for t in _windows(refs)]
             continue
         passages += [Passage("body", i + 1, t) for t in _windows(text)]
-    return Document(title, len(pages), passages, embed=_wordy(passages))
+    return Document(title, len(pages), passages, embed=_wordy(passages), pending_ocr=pending)
+
+
+OCR_PAGE_LIMIT = 400
+
+
+def ocr(path: str, pages: list[int]) -> dict[int, str]:
+    """Text of scanned pages, from the app's `--ocr` mode (Vision, on this Mac). About 1.5 s a page."""
+    app = os.environ.get("SIFT_APP")
+    out: dict[int, str] = {}
+    if not app:
+        return out
+    for i in range(0, len(pages), 20):
+        part = pages[i:i + 20]
+        try:
+            done = subprocess.run([app, "--ocr", path, ",".join(map(str, part))], capture_output=True,
+                                  timeout=30 + 10 * len(part))
+            out.update({int(k): v for k, v in json.loads(done.stdout or b"{}").items()})
+        except Exception:
+            break
+    return out
 
 
 def _pdf_title(doc) -> str | None:
@@ -137,7 +170,10 @@ def _plain(path: Path, text: str) -> Document:
         if path.suffix.lower() in (".md", ".markdown", ".org", ".rst"):
             title = md_title(text)
         # The head keeps a note's metadata block: its author: and aliases: lines are what you'd search for.
-        passages.append(Passage("head", None, _squash("\n".join(lines[:12]))[:1500]))
+        # A note's own metadata block and title are its head; what it says about other things is body.
+        m = re.match(r"\A---\s*\n.*?\n---\s*(\n|\Z)", text, re.S)
+        head = (text[: m.end()] + "\n" + (title or "")) if m else "\n".join(lines[:3])
+        passages.append(Passage("head", None, _squash(head)[:1500]))
     passages += [Passage("body", None, t) for t in _windows(text)]
     # A text copy of a PDF ("paper.pdf.txt") is found by its words; its PDF carries the meaning.
     embed = not path.name.lower().endswith(".pdf.txt") and _wordy(passages)

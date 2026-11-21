@@ -9,7 +9,7 @@ Press ⌘Space and type what you remember. Sift answers on every keystroke:
 - **Currencies**: `100 usd`, `$100 to eur`, `500 kr`. Uses the European Central Bank's daily rates.
 - **Units**: `5 km in miles`, `20 c to f`, `180 cm in feet`, `3 dl`.
 - **Files and folders**: any part of the name, across your home folder, Applications and plugged-in drives.
-- **Document contents**: PDFs, Word, PowerPoint, Excel, Markdown, text, HTML and LaTeX. Each result shows the page
+- **Document contents**: PDFs (scanned ones too), Word, PowerPoint, Excel, Markdown, text, HTML and LaTeX. Each result shows the page
   and the passage that matched.
 
 ## Why
@@ -51,6 +51,24 @@ engine, model process             Qwen3-Embedding (8-bit) on llama.cpp + Metal, 
   searched by their words but not embedded a second time.
 - **Privacy.** Nothing about your files leaves the computer. Sift goes online for two things only: the
   one-time model download and the daily exchange rates. Neither request carries anything you type or store.
+
+## Private by design
+
+Everything Sift knows about your files stays on your Mac: the index, the model that understands meaning, and the
+text recognition for scanned PDFs (Apple's Vision) all run locally. Sift goes online for two things only, and
+neither request carries anything you type or store: downloading the model once (640 MB), and fetching the day's
+exchange rates. Files that are only in iCloud are listed by name and never downloaded or opened.
+
+## Checking search quality
+
+`evals/` holds a small made-up library (papers that cite each other, notes, a duplicate, a scan) and queries with
+the files they should find. Run it before and after any change to ranking:
+
+```sh
+cd engine
+SIFT_APP=~/Applications/Sift.app/Contents/MacOS/Sift .venv/bin/python ../evals/run.py   # the full check, with the model
+uv run --with pytest pytest -q                                                          # fast tests, no model
+```
 
 ## Build
 

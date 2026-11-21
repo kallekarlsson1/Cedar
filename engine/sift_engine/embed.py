@@ -36,6 +36,7 @@ def model_file() -> str:
 
 def worker_main(conn):
     """The helper process: loads the model, then embeds what it's sent until told to stop (or the engine goes)."""
+    config.DATA.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(filename=config.LOG, level=logging.INFO, format="%(asctime)s %(process)d %(message)s")
     config.set_priority("search")   # a search waits on this process; indexing goes one passage at a time
     try:

@@ -60,6 +60,7 @@ final class EngineClient {
         p.standardError = FileHandle.nullDevice
         var env = ProcessInfo.processInfo.environment
         env["PYTHONUNBUFFERED"] = "1"
+        env["SIFT_APP"] = Bundle.main.executablePath ?? ""     // the engine calls back for `--ocr`
         env["TOKENIZERS_PARALLELISM"] = "false"
         p.environment = env
         p.terminationHandler = { [weak self] proc in

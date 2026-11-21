@@ -1,6 +1,7 @@
 """The document index: passages in SQLite with a keyword index (FTS5) and a vector each, plus the search over both."""
 
 import math
+import os
 import re
 import zlib
 import sqlite3
@@ -52,7 +53,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS docfts USING fts5(name, head, body, refs,
 # How much finding a word counts, by where it is. A paper's authors beat the names it cites.
 FIELD_WEIGHT = {"name": 1.0, "head": 1.0, "body": 0.5, "refs": 0.12}
 COLUMNS = ["name", "head", "body", "refs"]
-Z_GATE = 2.5          # a passage counts as a meaning match when it stands this far above the rest
+# A passage is a meaning match when it stands out from the rest for this query (z) AND is close in absolute terms
+# (cosine). Standing out alone isn't enough: among 16,000 passages something always stands out, and a nonsense
+# query ("asdf qwerty zxcv") reached z 4.8. Measured with this model: real matches have cosine 0.44-0.75, the best
+# passage for queries about nothing in the library 0.29-0.38 (evals/, and the same on a real 16k-passage library).
+Z_GATE = 2.0
+MIN_COSINE = 0.42
 WORD_WEIGHT = 5.0
 TITLE_WEIGHT = 3.0
 # Ties go to the documents people mean: a paper's PDF before a text dump of it.
@@ -195,8 +201,9 @@ class Content:
                 db.execute("INSERT INTO docs(path, mtime, size, state, embed) VALUES(?, ?, ?, 'unreadable', 0)",
                            (path, mtime, size))
                 return
-            cur = db.execute("INSERT INTO docs(path, mtime, size, title, pages, embed, state) VALUES(?,?,?,?,?,?,'ok')",
-                             (path, mtime, size, doc.title, doc.pages, int(doc.embed)))
+            cur = db.execute("INSERT INTO docs(path, mtime, size, title, pages, embed, state) VALUES(?,?,?,?,?,?,?)",
+                             (path, mtime, size, doc.title, doc.pages, int(doc.embed),
+                              "ocr" if doc.pending_ocr else "ok"))
             doc_id = cur.lastrowid
             stem = Path(path).stem
             name_text = stem + (" — " + doc.title if doc.title else "")
@@ -230,6 +237,24 @@ class Content:
             db.execute("DELETE FROM chunks WHERE doc = ?", (doc,))
             db.execute("DELETE FROM docs WHERE id = ?", (doc,))
         self.dead_docs.add(doc)
+
+    def read_scans(self, log=print) -> int:
+        """Reads again the PDFs whose scanned pages were waiting for the charger, and once, the scans indexed
+        before Sift could read them."""
+        with self.db as db:
+            if not db.execute("SELECT 1 FROM meta WHERE key = 'ocr'").fetchone():
+                db.execute("""UPDATE docs SET state = 'ocr' WHERE lower(path) LIKE '%.pdf' AND pages > 0 AND
+                    (SELECT COUNT(DISTINCT page) FROM chunks c WHERE c.doc = docs.id AND c.region IN ('body', 'refs'))
+                    < pages * 0.5""")
+                db.execute("INSERT INTO meta(key, value) VALUES('ocr', '1')")
+        if config.on_battery() or not os.environ.get("SIFT_APP"):
+            return 0
+        rows = self.db.execute("SELECT path, mtime, size FROM docs WHERE state = 'ocr'").fetchall()
+        for path, mtime, size in rows:
+            self.add(path, mtime, size)
+        if rows:
+            log(f"read {len(rows)} scanned PDFs")
+        return len(rows)
 
     def remove_path(self, path: str):
         row = self.db.execute("SELECT id FROM docs WHERE path = ?", (path,)).fetchone()
@@ -306,7 +331,7 @@ class Content:
         return len(rows)
 
     def progress(self) -> dict:
-        docs = self.db.execute("SELECT COUNT(*) FROM docs WHERE state = 'ok'").fetchone()[0]
+        docs = self.db.execute("SELECT COUNT(*) FROM docs WHERE state IN ('ok', 'ocr')").fetchone()[0]
         todo = self.db.execute("""SELECT COUNT(*), SUM(c.first_pass) FROM chunks c JOIN docs d ON d.id = c.doc
             WHERE c.vec IS NULL AND d.embed = 1 AND c.region IN ('head', 'body')""").fetchone()
         done = self.db.execute("SELECT COUNT(*) FROM chunks WHERE vec IS NOT NULL").fetchone()[0]
@@ -351,7 +376,7 @@ class Content:
         # Meaning: every passage scored, put on this query's scale, best passage per document.
         meaning: dict[int, tuple[float, int]] = {}
         q = None
-        if deep and self.embedder and self.embedder.ready.is_set() and self.vectors_loaded and self.rows > 50:
+        if deep and self.embedder and self.embedder.ready.is_set() and self.vectors_loaded and self.rows >= 8:
             try:
                 q = self.embedder.query([query])[0]
             except Exception:
@@ -371,6 +396,8 @@ class Content:
             for i in top:
                 if not alive[i]:
                     continue
+                if scores[i] < MIN_COSINE:
+                    break                       # sorted by score: nothing after this is close enough
                 d = int(docs[i])
                 if d not in meaning:
                     meaning[d] = (float(z[i]), int(chunks[i]))

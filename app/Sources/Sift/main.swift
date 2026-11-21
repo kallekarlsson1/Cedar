@@ -141,6 +141,14 @@ if CommandLine.arguments.count > 2, CommandLine.arguments[1] == "--try" {
     exit(0)
 }
 
+// `Sift --ocr file.pdf 1,2,5`: the text of those pages, for the engine (scanned PDFs).
+if CommandLine.arguments.count > 3, CommandLine.arguments[1] == "--ocr" {
+    let pages = CommandLine.arguments[3].split(separator: ",").compactMap { Int($0) }
+    let result = OCR.run(path: CommandLine.arguments[2], pages: pages)
+    if let data = try? JSONSerialization.data(withJSONObject: result) { FileHandle.standardOutput.write(data) }
+    exit(0)
+}
+
 let app = NSApplication.shared
 if CommandLine.arguments.count > 3, CommandLine.arguments[1] == "--snapshot" {
     app.setActivationPolicy(.accessory)
