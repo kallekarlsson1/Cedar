@@ -462,6 +462,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
             NSWorkspace.shared.openApplication(at: app.url, configuration: NSWorkspace.OpenConfiguration())
         case .doc(let d):
             usage.opened(d.path)
+            engine.opened(d.path)
             // Preview and most apps read the find pasteboard: ⌘G jumps to the words you searched for.
             let find = NSPasteboard(name: .find)
             find.clearContents()

@@ -22,6 +22,7 @@ final class EngineClient {
         let vectors: Int
         let to_embed: Int
         let first_pass_left: Int
+        let rate: Double?
     }
 
     let socketPath: String
@@ -82,6 +83,11 @@ final class EngineClient {
             let answer = data.flatMap { try? JSONDecoder().decode(Answer.self, from: $0) }
             DispatchQueue.main.async { done(answer) }
         }
+    }
+
+    /// Tells the engine a document was opened, so it's read in full if it wasn't.
+    func opened(_ path: String) {
+        queue.async { _ = try? self.request(["op": "opened", "path": path], timeout: 2) }
     }
 
     func status(done: @escaping (Status?) -> Void) {

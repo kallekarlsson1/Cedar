@@ -26,6 +26,7 @@ public enum Eval {
         var model: EmbeddingModel?
         if let modelPath {
             model = try EmbeddingModel(path: modelPath)
+            try index.makeMissingCodes()
             index.loadVectors()
             let started = Date()
             var n = 0

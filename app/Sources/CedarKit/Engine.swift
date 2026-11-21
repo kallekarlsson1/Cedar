@@ -19,11 +19,13 @@ public final class Engine {
     private var changed = Set<String>()
     private let changeSignal = DispatchSemaphore(value: 0)
     private var work = 0                    // counts up when there may be new passages to embed
+    private var rate = 0.0                  // passages per second, smoothed: for the time estimate
 
     struct Answer: Codable { let docs: [DocHit]; let files: [FileHit]; let ms: Double }
     struct Status: Codable {
         let state: String; let names: Int; let model: Bool
         let documents: Int; let vectors: Int; let to_embed: Int; let first_pass_left: Int
+        let rate: Double        // passages embedded per second lately (0: not measured yet)
     }
 
     public init() throws {
@@ -122,6 +124,7 @@ public final class Engine {
     // MARK: embedding
 
     private func wake() {
+        try? content.makeMissingCodes()
         content.loadVectors()
         model.load(log: logLine)
     }
@@ -144,8 +147,13 @@ public final class Engine {
                 continue
             }
             // On battery only titles and first pages; the long tail waits for the charger.
+            let began = Date()
             let done = (try? content.embedSome(model: { [model] in model.document($0) }, limit: 8, firstPassOnly: battery,
                                                pause: { [unowned self] in self.sinceSearch < Self.idleBeforeEmbedding || self.model.searchWaiting })) ?? 0
+            if done >= 4 {
+                let now = Double(done) / max(Date().timeIntervalSince(began), 0.01)
+                lock.lock(); rate = rate == 0 ? now : rate * 0.9 + now * 0.1; lock.unlock()
+            }
             if done == 0 {
                 if idle > Self.idleBeforeUnload {
                     model.unload(log: logLine)
@@ -188,13 +196,13 @@ public final class Engine {
     }
 
     func status() -> Status {
-        lock.lock(); var reading = state; lock.unlock()
+        lock.lock(); var reading = state; let rate = self.rate; lock.unlock()
         let p = content.progress()
         if reading == "up to date" && p.to_embed > 0 {
             reading = Config.onBattery() && p.first_pass_left == 0 ? "waiting for the charger" : "embedding"
         }
         return Status(state: reading, names: names.count(), model: model.loaded, documents: p.documents, vectors: p.vectors,
-                      to_embed: p.to_embed, first_pass_left: p.first_pass_left)
+                      to_embed: p.to_embed, first_pass_left: p.first_pass_left, rate: (rate * 10).rounded() / 10)
     }
 
     private func reply(to line: Data) -> Data {
@@ -202,6 +210,10 @@ public final class Engine {
         guard let request = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { return Data(#"{"error":"bad request"}"#.utf8) }
         switch request["op"] as? String {
         case "search": return (try? encoder.encode(search(request["q"] as? String ?? "", deep: request["deep"] as? Bool ?? false))) ?? Data()
+        case "opened":
+            try? content.opened(request["path"] as? String ?? "")
+            moreWork()
+            return Data("{}".utf8)
         case "status": return (try? encoder.encode(status())) ?? Data()
         default: return Data(#"{"error":"unknown op"}"#.utf8)
         }

@@ -101,6 +101,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let total = s.vectors + s.to_embed
                 let pct = total > 0 ? Int(Double(s.vectors) / Double(total) * 100) : 0
                 line += " · understanding \(pct)%"
+                if let rate = s.rate, rate > 0, s.state == "embedding" {
+                    let minutes = Double(s.to_embed) / rate / 60
+                    line += minutes < 90 ? " · about \(max(Int(minutes.rounded()), 1)) min left" : " · about \(Int((minutes / 60).rounded())) h left"
+                }
                 if s.state == "waiting for the charger" { line += " (paused on battery)" }
             } else if s.state != "up to date" && s.state != "embedding" {
                 line += " · \(s.state)"
@@ -181,6 +185,72 @@ if CommandLine.arguments.count > 3, CommandLine.arguments[1] == "--eval" {
         let ok = try Eval.run(corpus: CommandLine.arguments[2], queries: CommandLine.arguments[3], modelPath: wordsOnly ? nil : model)
         fflush(stdout); _exit(ok ? 0 : 1)
     } catch { print("eval failed: \(error)"); fflush(stdout); _exit(2) }
+}
+
+// `Cedar --quant-test`: does searching through 1-bit codes, then scoring the best few exactly, give the same results?
+if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "--quant-test" {
+    guard let file = ModelClient.modelFile(), let model = try? EmbeddingModel(path: file) else { print("no model"); exit(1) }
+    let db = try! Database(path: Config.contentDB)
+    var matrix: [Float16] = [], docs: [Int64] = []
+    for row in try! db.query("SELECT doc, vec FROM chunks WHERE vec IS NOT NULL") {
+        guard let blob = row[1].blob, blob.count == 2048 else { continue }
+        blob.withUnsafeBytes { matrix.append(contentsOf: $0.bindMemory(to: Float16.self)) }
+        docs.append(row[0].int ?? 0)
+    }
+    let n = docs.count, dim = 1024
+    var codes: [UInt64] = []
+    matrix.withUnsafeBufferPointer { m in
+        for r in 0..<n { codes.append(contentsOf: Bits.code(UnsafeBufferPointer(rebasing: m[r * dim..<(r + 1) * dim]))) }
+    }
+    func exact(_ q: [Float], _ r: Int) -> Float { var s: Float = 0; for i in 0..<dim { s += Float(matrix[r * dim + i]) * q[i] }; return s }
+    func topDocs(_ rows: [(Int, Float)]) -> [Int64] {
+        var out: [Int64] = []
+        for (r, _) in rows.sorted(by: { $0.1 > $1.1 }) { if !out.contains(docs[r]) { out.append(docs[r]) }; if out.count == 10 { break } }
+        return out
+    }
+    let queries = ["people using several chatbots for math and writing", "does AI debate help humans judge correctly", "LLMs that agree too much with users",
+        "erroneous examples in mathematics learning", "social conformity online", "conspiracy beliefs reduced by talking to AI", "pedagogical agents multiple tutors",
+        "computer vision textbook", "a rental agreement", "meeting notes from last month", "project plan and next steps",
+        "overhearing a dialogue and learning from it", "productive failure", "cognitive conflict between peers", "how many participants took part",
+        "detecting objects in images", "receipt for an order", "curriculum vitae", "belief updating after counterarguments", "trust in algorithms versus humans",
+        "AI dependence scale", "turn-taking in multi-party dialogue", "worked examples physics", "foundation model of human cognition",
+        "halvorsen", "sycophancy", "bank payment", "self explanation", "glacier", "asdf qwerty"]
+    print("\(n) passages; \(queries.count) queries")
+    for keep in [100, 300, 1000] {
+        var top1 = 0, overlap = 0.0, zdiff = 0.0, tExact = 0.0, tFast = 0.0
+        for text in queries {
+            guard let q = model.embedQuery(text) else { continue }
+            var t = Date()
+            let all = (0..<n).map { ($0, exact(q, $0)) }
+            let truth = topDocs(all)
+            tExact += Date().timeIntervalSince(t)
+            t = Date()
+            let near = Bits.nearest(Bits.code(q), in: codes, rows: n, keep: keep)
+            let got = topDocs(near.map { ($0, exact(q, $0)) })
+            // The scale for "stands out" from a sample of 2,000 rows instead of all of them.
+            var sm: Float = 0, ss: Float = 0, sn: Float = 0
+            for r in stride(from: 0, to: n, by: max(n / 2000, 1)) { let v = exact(q, r); sm += v; ss += v * v; sn += 1 }
+            tFast += Date().timeIntervalSince(t)
+            let mean = all.map(\.1).reduce(0, +) / Float(n), sd = (all.map { ($0.1 - mean) * ($0.1 - mean) }.reduce(0, +) / Float(n)).squareRoot()
+            let smean = sm / sn, ssd = max(ss / sn - smean * smean, 0).squareRoot()
+            let best = all.map(\.1).max() ?? 0
+            zdiff += Double(abs((best - mean) / sd - (best - smean) / ssd))
+            if truth.first == got.first { top1 += 1 }
+            overlap += Double(Set(truth).intersection(got).count) / Double(max(truth.count, 1))
+        }
+        let c = Double(queries.count)
+        print(String(format: "keep %4d: top hit same %2d/%d, top-10 overlap %.3f, z of best off by %.2f on average, %.1f ms (exact scan in plain Swift %.1f ms)",
+                     keep, top1, queries.count, overlap / c, zdiff / c, tFast / c * 1000, tExact / c * 1000))
+    }
+    // Speed at a million passages (made-up codes: only the timing means anything).
+    let big = 1_000_000
+    var fake = [UInt64](repeating: 0, count: big * Bits.words)
+    for i in fake.indices { fake[i] = UInt64.random(in: 0...UInt64.max) }
+    let probe = Bits.code(model.embedQuery("x")!)
+    let t = Date(); for _ in 0..<5 { _ = Bits.nearest(probe, in: fake, rows: big, keep: 4000) }
+    print(String(format: "1,000,000 passages: %.1f ms per search for the bit scan, %d MB of codes in memory (float16 would be %d MB)",
+                 Date().timeIntervalSince(t) / 5 * 1000, big * 128 / 1_000_000, big * 2048 / 1_000_000))
+    fflush(stdout); _exit(0)
 }
 
 // `Cedar --embed-test`: do this binary's vectors match the ones in the index? (And how fast is it.)

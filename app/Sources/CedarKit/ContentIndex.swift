@@ -1,4 +1,3 @@
-import Accelerate
 import Foundation
 import zlib
 
@@ -40,6 +39,9 @@ public final class ContentIndex {
     CREATE INDEX IF NOT EXISTS chunks_todo ON chunks(first_pass, doc) WHERE vec IS NULL;
     CREATE INDEX IF NOT EXISTS chunks_twin ON chunks(substr(text, 1, 40)) WHERE vec IS NULL;
     CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
+    -- One bit per dimension of each vector (128 bytes): what search keeps in memory. The vectors stay on disk.
+    CREATE TABLE IF NOT EXISTS codes(chunk INTEGER PRIMARY KEY, doc INTEGER NOT NULL, bits BLOB NOT NULL);
+    CREATE INDEX IF NOT EXISTS codes_doc ON codes(doc);
     CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(name, head, body, refs, d, tokenize='porter unicode61 remove_diacritics 2');
     CREATE VIRTUAL TABLE IF NOT EXISTS docfts USING fts5(name, head, body, refs, tokenize='porter unicode61 remove_diacritics 2');
     """
@@ -73,10 +75,14 @@ public final class ContentIndex {
     let read: Database       // searching: its own connection, so it never waits for a document being written
     static let dim = EmbeddingModel.dimension
 
-    // Vectors in memory: float16, half of float32's size with the same ranking.
-    private var matrix: [Float16] = []
+    // In memory: a 1-bit code per passage (128 bytes) and a small sample of full vectors. A search finds the
+    // closest codes, then scores those few hundred passages exactly from the vectors on disk. Measured on a real
+    // 22,000-passage library over 30 queries: the same top 10 as scoring everything, in 1/16 of the memory.
+    private var codes: [UInt64] = []
     private var rowChunk: [Int64] = []
     private var rowDoc: [Int64] = []
+    private var sample: [Float16] = []       // every k-th vector: sets the scale for "stands out" (mean, deviation)
+    private var sampleEvery: Int64 = 1
     private let vectorLock = NSLock()
     public private(set) var vectorsLoaded = false
     public var rows: Int { rowChunk.count }
@@ -85,29 +91,55 @@ public final class ContentIndex {
         try FileManager.default.createDirectory(at: Config.data, withIntermediateDirectories: true)
         write = try Database(path: Config.contentDB)
         try write.execute(Self.schema)
+        if try !write.query("PRAGMA table_info(docs)").contains(where: { $0[1].text == "opened" }) {
+            try write.execute("ALTER TABLE docs ADD COLUMN opened REAL")      // when it was last opened from Cedar
+        }
         read = try Database(path: Config.contentDB)
         // Vectors made by another model don't compare: embed again.
         let named = try write.query("SELECT value FROM meta WHERE key = 'vectors'").first?[0].text
         if let named, named != Config.vectors, !Config.compatible.contains(named) {
             try write.query("UPDATE chunks SET vec = NULL WHERE vec IS NOT NULL")
+            try write.query("DELETE FROM codes")
         }
         try write.query("INSERT OR REPLACE INTO meta(key, value) VALUES('vectors', ?)", [.text(Config.vectors)])
     }
 
     // MARK: vectors
 
+    static func half(_ blob: Data) -> [Float16] { blob.withUnsafeBytes { Array($0.bindMemory(to: Float16.self)) } }
+
+    /// Codes for vectors that don't have one yet (an index from before codes existed).
+    public func makeMissingCodes() throws {
+        let missing = try write.query("""
+            SELECT c.id, c.doc, c.vec FROM chunks c WHERE c.vec IS NOT NULL AND c.id NOT IN (SELECT chunk FROM codes)
+            """)
+        guard !missing.isEmpty else { return }
+        try write.transaction {
+            for row in missing {
+                guard let blob = row[2].blob, blob.count == Self.dim * 2 else { continue }
+                let bits = Self.half(blob).withUnsafeBufferPointer { Bits.code($0) }
+                try write.query("INSERT OR REPLACE INTO codes(chunk, doc, bits) VALUES(?,?,?)",
+                                [row[0], row[1], .blob(bits.withUnsafeBufferPointer { Data(buffer: $0) })])
+            }
+        }
+    }
+
     public func loadVectors() {
         vectorLock.lock(); defer { vectorLock.unlock() }
         guard !vectorsLoaded else { return }
-        let found = (try? read.query("SELECT id, doc, vec FROM chunks WHERE vec IS NOT NULL ORDER BY id")) ?? []
-        matrix.removeAll(keepingCapacity: false)
-        matrix.reserveCapacity(found.count * Self.dim)
+        let found = (try? read.query("SELECT chunk, doc, bits FROM codes ORDER BY chunk")) ?? []
+        codes = []; codes.reserveCapacity(found.count * Bits.words)
         rowChunk = []; rowDoc = []
         for row in found {
-            guard let blob = row[2].blob, blob.count == Self.dim * 2 else { continue }
-            blob.withUnsafeBytes { matrix.append(contentsOf: $0.bindMemory(to: Float16.self)) }
+            guard let blob = row[2].blob, blob.count == Bits.words * 8 else { continue }
+            blob.withUnsafeBytes { codes.append(contentsOf: $0.bindMemory(to: UInt64.self)) }
             rowChunk.append(row[0].int ?? 0)
             rowDoc.append(row[1].int ?? 0)
+        }
+        sampleEvery = Int64(max(rowChunk.count / 2000, 1))
+        sample = []
+        for row in (try? read.query("SELECT vec FROM chunks WHERE vec IS NOT NULL AND id % ? = 0", [.int(sampleEvery)])) ?? [] {
+            if let blob = row[0].blob, blob.count == Self.dim * 2 { sample.append(contentsOf: Self.half(blob)) }
         }
         vectorsLoaded = true
     }
@@ -115,44 +147,59 @@ public final class ContentIndex {
     /// Frees the in-memory copy; keyword search keeps working.
     public func releaseVectors() {
         vectorLock.lock(); defer { vectorLock.unlock() }
-        matrix = []; rowChunk = []; rowDoc = []
+        codes = []; rowChunk = []; rowDoc = []; sample = []
         vectorsLoaded = false
     }
 
-    private func append(chunk: Int64, doc: Int64, vector: [Float16]) {
+    private func append(chunk: Int64, doc: Int64, vector: [Float16], bits: [UInt64]) {
         vectorLock.lock(); defer { vectorLock.unlock() }
         guard vectorsLoaded else { return }      // they're in the database; the next load brings them
-        matrix.append(contentsOf: vector)
+        codes.append(contentsOf: bits)
         rowChunk.append(chunk)
         rowDoc.append(doc)
+        if chunk % sampleEvery == 0 { sample.append(contentsOf: vector) }
     }
 
-    /// Cosine of the query with every passage, and which document and passage each row is.
-    private func scores(_ q: [Float]) -> (scores: [Float], docs: [Int64], chunks: [Int64]) {
-        vectorLock.lock(); defer { vectorLock.unlock() }
+    static func dot(_ v: [Float16], _ q: [Float]) -> Float {
+        var s: Float = 0
+        for i in 0..<min(v.count, q.count) { s += Float(v[i]) * q[i] }
+        return s
+    }
+
+    /// The passages closest to the query, scored exactly, best first; and the mean and deviation of scores across
+    /// the library (from the sample), which say how far a score stands out.
+    private func closest(_ q: [Float]) -> (hits: [(doc: Int64, chunk: Int64, score: Float)], mean: Float, deviation: Float) {
+        vectorLock.lock()
         let n = rowChunk.count
-        var out = [Float](repeating: 0, count: n)
-        let block = 8192     // the float32 copy the multiply needs stays at 32 MB
-        var scratch = [Float](repeating: 0, count: min(block, max(n, 1)) * Self.dim)
-        var start = 0
-        while start < n {
-            let count = min(block, n - start)
-            matrix.withUnsafeBufferPointer { src in
-                scratch.withUnsafeMutableBufferPointer { dst in
-                    var s = vImage_Buffer(data: UnsafeMutableRawPointer(mutating: src.baseAddress! + start * Self.dim),
-                                          height: 1, width: vImagePixelCount(count * Self.dim), rowBytes: count * Self.dim * 2)
-                    var d = vImage_Buffer(data: dst.baseAddress!, height: 1, width: vImagePixelCount(count * Self.dim),
-                                          rowBytes: count * Self.dim * 4)
-                    vImageConvert_Planar16FtoPlanarF(&s, &d, 0)
-                    out.withUnsafeMutableBufferPointer { o in
-                        cblas_sgemv(CblasRowMajor, CblasNoTrans, Int32(count), Int32(Self.dim), 1, dst.baseAddress!,
-                                    Int32(Self.dim), q, 1, 0, o.baseAddress! + start, 1)
-                    }
-                }
+        let keep = min(n, max(300, min(n / 70, 4000)))     // more candidates as the library grows
+        let near = Bits.nearest(Bits.code(q), in: codes, rows: n, keep: keep)
+        let picked = near.map { (chunk: rowChunk[$0], doc: rowDoc[$0]) }
+        var sum: Float = 0, squares: Float = 0
+        let sampled = sample.count / Self.dim
+        sample.withUnsafeBufferPointer { s in
+            for r in 0..<sampled {
+                var v: Float = 0
+                for i in 0..<Self.dim { v += Float(s[r * Self.dim + i]) * q[i] }
+                sum += v; squares += v * v
             }
-            start += count
         }
-        return (out, rowDoc, rowChunk)
+        vectorLock.unlock()
+        let mean = sampled > 0 ? sum / Float(sampled) : 0
+        let deviation = sampled > 0 ? max(squares / Float(sampled) - mean * mean, 0).squareRoot() : 1
+        var docOf: [Int64: Int64] = [:]
+        for p in picked { docOf[p.chunk] = p.doc }
+        var hits: [(doc: Int64, chunk: Int64, score: Float)] = []
+        let ids = picked.map(\.chunk)
+        for start in stride(from: 0, to: ids.count, by: 500) {
+            let part = ids[start..<min(start + 500, ids.count)]
+            let marks = part.map { _ in "?" }.joined(separator: ",")
+            for row in (try? read.query("SELECT id, vec FROM chunks WHERE id IN (\(marks))", part.map { .int($0) })) ?? [] {
+                guard let id = row[0].int, let blob = row[1].blob, blob.count == Self.dim * 2, let doc = docOf[id] else { continue }
+                hits.append((doc, id, Self.dot(Self.half(blob), q)))
+            }
+        }
+        hits.sort { $0.score > $1.score }
+        return (hits, mean, deviation)
     }
 
     // MARK: indexing
@@ -224,18 +271,19 @@ public final class ContentIndex {
             try write.query("DELETE FROM fts WHERE rowid IN (SELECT id FROM chunks WHERE doc = ?)", [.int(doc)])
             try write.query("DELETE FROM docfts WHERE rowid = ?", [.int(doc)])
             try write.query("DELETE FROM shingles WHERE doc = ?", [.int(doc)])
+            try write.query("DELETE FROM codes WHERE doc = ?", [.int(doc)])
             try write.query("DELETE FROM chunks WHERE doc = ?", [.int(doc)])
             try write.query("DELETE FROM docs WHERE id = ?", [.int(doc)])
         }
         vectorLock.lock()
         if vectorsLoaded, rowDoc.contains(doc) {       // drop its rows from memory
-            var keptMatrix: [Float16] = []; keptMatrix.reserveCapacity(matrix.count)
+            var keptCodes: [UInt64] = []; keptCodes.reserveCapacity(codes.count)
             var keptChunk: [Int64] = [], keptDoc: [Int64] = []
             for i in rowDoc.indices where rowDoc[i] != doc {
-                keptMatrix.append(contentsOf: matrix[i * Self.dim..<(i + 1) * Self.dim])
+                keptCodes.append(contentsOf: codes[i * Bits.words..<(i + 1) * Bits.words])
                 keptChunk.append(rowChunk[i]); keptDoc.append(rowDoc[i])
             }
-            matrix = keptMatrix; rowChunk = keptChunk; rowDoc = keptDoc
+            codes = keptCodes; rowChunk = keptChunk; rowDoc = keptDoc
         }
         vectorLock.unlock()
     }
@@ -310,14 +358,31 @@ public final class ContentIndex {
 
     // MARK: embedding
 
+    /// Beyond its title and first pages, a document is embedded in full only if it's in use: changed, added or
+    /// opened from Cedar within this long. Older ones stay searchable by every word and by the meaning of their
+    /// first pages, and are embedded in full the moment you open one. This is what keeps a library of tens of
+    /// thousands of documents from costing days of GPU time.
+    public static let deepWindow: Double = 2 * 365 * 86400
+
+    /// SQL condition on chunks c / docs d: this passage should have a vector.
+    static func wanted(now: Double = Date().timeIntervalSince1970) -> String {
+        "(c.first_pass = 1 OR max(COALESCE(d.opened, 0), d.mtime) > \(now - deepWindow))"
+    }
+
+    /// You opened this document from Cedar: read it in full, soon.
+    public func opened(_ path: String) throws {
+        try write.query("UPDATE docs SET opened = ? WHERE path = ?", [.double(Date().timeIntervalSince1970), .text(path)])
+    }
+
     /// Embeds the next passages, one at a time: first pages of every document before the rest. Stops early when
     /// `pause` says someone is searching. Returns how many it did.
     public func embedSome(model: (String) -> [Float]?, limit: Int = 8, firstPassOnly: Bool = false,
                           pause: () -> Bool = { false }) throws -> Int {
         let todo = try write.query("""
             SELECT c.id, c.doc, c.text FROM chunks c JOIN docs d ON d.id = c.doc
-            WHERE c.vec IS NULL AND d.embed = 1 AND c.region IN ('head', 'body') \(firstPassOnly ? "AND c.first_pass = 1" : "")
-            ORDER BY c.first_pass DESC, CASE WHEN c.first_pass = 1 THEN -d.mtime ELSE d.size END, c.ord LIMIT ?
+            WHERE c.vec IS NULL AND d.embed = 1 AND c.region IN ('head', 'body') AND \(Self.wanted())
+            \(firstPassOnly ? "AND c.first_pass = 1" : "")
+            ORDER BY c.first_pass DESC, -max(COALESCE(d.opened, 0), d.mtime), c.doc, c.ord LIMIT ?
             """, [.int(Int64(limit))])
         var done = 0
         for row in todo {
@@ -329,14 +394,18 @@ public final class ContentIndex {
             // A document deleted meanwhile keeps no vectors.
             guard try write.query("UPDATE chunks SET vec = ? WHERE id = ? RETURNING id", [.blob(blob), .int(id)]).first != nil
             else { continue }
-            append(chunk: id, doc: doc, vector: half)
+            let bits = half.withUnsafeBufferPointer { Bits.code($0) }
+            let bitsBlob = bits.withUnsafeBufferPointer { Data(buffer: $0) }
+            try write.query("INSERT OR REPLACE INTO codes(chunk, doc, bits) VALUES(?,?,?)", [.int(id), .int(doc), .blob(bitsBlob)])
+            append(chunk: id, doc: doc, vector: half, bits: bits)
             done += 1
             // Passages with the same text ("paper (1).pdf"): one embedding serves them all.
             for twin in try write.query("""
                 UPDATE chunks SET vec = ? WHERE vec IS NULL AND substr(text, 1, 40) = substr(?, 1, 40) AND text = ?
                 AND region IN ('head', 'body') AND doc IN (SELECT id FROM docs WHERE embed = 1) RETURNING id, doc
                 """, [.blob(blob), .text(text), .text(text)]) {
-                append(chunk: twin[0].int ?? 0, doc: twin[1].int ?? 0, vector: half)
+                try write.query("INSERT OR REPLACE INTO codes(chunk, doc, bits) VALUES(?,?,?)", [twin[0], twin[1], .blob(bitsBlob)])
+                append(chunk: twin[0].int ?? 0, doc: twin[1].int ?? 0, vector: half, bits: bits)
             }
         }
         return done
@@ -348,7 +417,7 @@ public final class ContentIndex {
         p.vectors = Int((try? read.query("SELECT COUNT(*) FROM chunks WHERE vec IS NOT NULL").first?[0].int) ?? 0 ?? 0)
         if let row = try? read.query("""
             SELECT COUNT(*), SUM(c.first_pass) FROM chunks c JOIN docs d ON d.id = c.doc
-            WHERE c.vec IS NULL AND d.embed = 1 AND c.region IN ('head', 'body')
+            WHERE c.vec IS NULL AND d.embed = 1 AND c.region IN ('head', 'body') AND \(Self.wanted())
             """).first {
             p.to_embed = Int(row[0].int ?? 0)
             p.first_pass_left = Int(row[1].int ?? 0)
@@ -405,15 +474,11 @@ public final class ContentIndex {
         // Meaning: every passage scored, put on this query's scale, best passage per document.
         var meaning: [Int64: (z: Double, chunk: Int64)] = [:]
         if let q = queryVector, q.count == Self.dim, vectorsLoaded, rows >= 8 {
-            let (scores, docs, chunks) = scores(q)
-            var mean: Float = 0, meanSquare: Float = 0
-            vDSP_meanv(scores, 1, &mean, vDSP_Length(scores.count))
-            vDSP_measqv(scores, 1, &meanSquare, vDSP_Length(scores.count))
-            let scale = max((max(meanSquare - mean * mean, 0)).squareRoot(), 0.02)
-            let order = scores.indices.sorted { scores[$0] > scores[$1] }.prefix(400)
-            for i in order {
-                if scores[i] < Self.minCosine { break }     // sorted by score: nothing after this is close enough
-                if meaning[docs[i]] == nil { meaning[docs[i]] = (Double((scores[i] - mean) / scale), chunks[i]) }
+            let (hits, mean, deviation) = closest(q)
+            let scale = max(deviation, 0.02)
+            for hit in hits.prefix(400) {
+                if hit.score < Self.minCosine { break }     // sorted by score: nothing after this is close enough
+                if meaning[hit.doc] == nil { meaning[hit.doc] = (Double((hit.score - mean) / scale), hit.chunk) }
             }
         }
 

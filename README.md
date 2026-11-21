@@ -26,7 +26,7 @@ One binary, three roles (all Swift; no Python, nothing to install besides the ap
 ```
 Cedar            the panel: apps, math and conversions in-process; asks the engine for the rest
    │ unix socket (yours only)
-Cedar --engine   lists files, reads documents, follows changes (FSEvents) and answers searches; ~90 MB
+Cedar --engine   lists files, reads documents, follows changes (FSEvents) and answers searches; ~30 MB
    │ pipe
 Cedar --model    Qwen3-Embedding (8-bit) on llama.cpp + Metal, ~220 MB; embeds passages while you're not
                  searching, quits after 2 idle minutes, back in under a second
@@ -34,7 +34,7 @@ Cedar --model    Qwen3-Embedding (8-bit) on llama.cpp + Metal, ~220 MB; embeds p
 ~/Library/Application Support/Cedar/
    names.db     every file and folder name; trigram index for all but dataset folders' files, which are
                 found by the start of their name. After the first listing, a start reads only changed folders
-   content.db   passages with page numbers, FTS5 keyword index, one vector per passage
+   content.db   passages with page numbers, FTS5 keyword index, one vector and one 128-byte code per passage
 ```
 
 - **Reading.** PDFs through PDFKit, Word and RTF through macOS's own import, PowerPoint and Excel through unzip,
@@ -45,7 +45,12 @@ Cedar --model    Qwen3-Embedding (8-bit) on llama.cpp + Metal, ~220 MB; embeds p
 - **Meaning.** [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF), 8-bit, on the Mac's
   GPU through llama.cpp, linked into the binary. For each query every passage's cosine is turned into a z-score;
   a document is a meaning match only when a passage stands out (z ≥ 2) and is close in absolute terms
-  (cosine ≥ 0.42), so a search can honestly come back empty. All vectors are compared directly in memory.
+  (cosine ≥ 0.42), so a search can honestly come back empty.
+- **Built to scale.** Memory holds one bit per dimension of each vector (128 bytes a passage). A search finds the
+  closest codes, then scores those few hundred passages exactly from the vectors on disk: the same top 10 as
+  scoring everything (30 queries on a real 22,000-passage library), and a million passages take 128 MB and a
+  2.5 ms scan. Beyond its first pages, a document is embedded in full only if it changed or was opened within
+  two years; opening an older one from Cedar reads it in full.
 - **Light on the machine.** On battery only titles and first pages are embedded; the rest, and text recognition,
   wait for the charger. Vectors are float16 in memory and leave it, with the model, when Cedar is idle.
 - **Order of work.** The keyword index of everything is built first. Embedding then covers every document's
