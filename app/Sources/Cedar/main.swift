@@ -142,6 +142,16 @@ if CommandLine.arguments.count > 2, CommandLine.arguments[1] == "--try" {
     exit(0)
 }
 
+// `Cedar --eval corpus queries.json [--words-only]`: the search-quality check on the Swift engine.
+if CommandLine.arguments.count > 3, CommandLine.arguments[1] == "--eval" {
+    let wordsOnly = CommandLine.arguments.contains("--words-only")
+    let model = ProcessInfo.processInfo.environment["CEDAR_MODEL"] ?? Config.modelPath
+    do {
+        let ok = try Eval.run(corpus: CommandLine.arguments[2], queries: CommandLine.arguments[3], modelPath: wordsOnly ? nil : model)
+        fflush(stdout); _exit(ok ? 0 : 1)
+    } catch { print("eval failed: \(error)"); fflush(stdout); _exit(2) }
+}
+
 // `Cedar --embed-test`: do this binary's vectors match the ones in the index? (And how fast is it.)
 if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "--embed-test" {
     let model = Config.modelPath
@@ -164,7 +174,7 @@ if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "--embed-test" {
     print(String(format: "%.1f passages/s", Double(rows.count) / Date().timeIntervalSince(t)))
     let q = Date(); for _ in 0..<10 { _ = m.embedQuery("the paper about several chatbots") }
     print(String(format: "query %.1f ms", Date().timeIntervalSince(q) * 100))
-    _exit(0)      // skip exit handlers: Metal's teardown asserts while a model is still alive
+    fflush(stdout); _exit(0)      // skip exit handlers: Metal's teardown asserts while a model is still alive
 }
 
 // `Cedar --ocr file.pdf 1,2,5`: the text of those pages, for the engine (scanned PDFs).
