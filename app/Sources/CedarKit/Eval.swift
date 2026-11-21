@@ -12,6 +12,7 @@ public enum Eval {
     ]
 
     public static func run(corpus: String, queries: String, modelPath: String?) throws -> Bool {
+        Config.ignoreBattery = true
         let index = try ContentIndex()
         var wanted: [String: (mtime: Double, size: Int64)] = [:]
         let walker = FileManager.default.enumerator(atPath: corpus)

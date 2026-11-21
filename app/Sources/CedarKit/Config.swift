@@ -85,7 +85,10 @@ public enum Config {
     private static let powerLock = NSLock()
 
     /// True when the Mac runs on battery (checked once a minute). Heavy work waits for the charger.
+    public static var ignoreBattery = false      // the quality check reads scans whatever the power source
+
     public static func onBattery() -> Bool {
+        if ignoreBattery { return false }
         powerLock.lock(); defer { powerLock.unlock() }
         if Date().timeIntervalSince(power.checked) > 60 {
             let p = Process()

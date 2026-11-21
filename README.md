@@ -30,10 +30,11 @@ model and the index).
 
 ## Why
 
-Spotlight treats every word in a PDF the same. A paper by Halvorsen gets buried under all the papers that only *cite*
-Halvorsen, and the PDF's own author field often says `arXiv GenPDF`. Cedar reads a paper's title and author block
-separately from its body and its reference list, and ranks them in that order. It also searches by meaning:
-"the paper about people using several chatbots for math and writing" finds the paper without those exact words.
+Spotlight treats every word in a PDF the same. Search for an author and the paper they wrote is buried under
+every paper that only *cites* them, and the PDF's own author field often says something like `arXiv GenPDF`.
+Cedar reads a paper's title and author block separately from its body and its reference list, and ranks them in
+that order. It also searches by meaning: "the paper about people using several chatbots for math and writing"
+finds the paper without those exact words.
 
 ## How it works
 

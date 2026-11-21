@@ -15,7 +15,9 @@ fi
 "${cmake_bin[@]}" -S "$src" -B "$src/build" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
     -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_OPENMP=OFF -DLLAMA_CURL=OFF \
     -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_COMMON=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_SERVER=OFF \
-    -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DCMAKE_OSX_ARCHITECTURES=arm64 >/dev/null
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DCMAKE_OSX_ARCHITECTURES=arm64 \
+    -DCMAKE_C_FLAGS="-ffile-prefix-map=$src=llama.cpp" -DCMAKE_CXX_FLAGS="-ffile-prefix-map=$src=llama.cpp" \
+    -DCMAKE_OBJC_FLAGS="-ffile-prefix-map=$src=llama.cpp" >/dev/null     # no local folder names in the libraries
 "${cmake_bin[@]}" --build "$src/build" --config Release --target llama -j 8 >/dev/null
 rm -rf "$out"; mkdir -p "$out/lib" "$out/include"
 find "$src/build" -name "*.a" -exec cp {} "$out/lib/" \;

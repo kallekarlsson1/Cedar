@@ -162,6 +162,9 @@ final class Converter {
         pattern: #"^\s*([$€£¥₹₩])?\s*(\d[\d\s]*(?:[.,]\d+)?)\s*([^\d\s][^\s]*?)?\s*(?:(?:to|in|i|till|=|->|→)\s+([^\s]+))?\s*$"#,
         options: .caseInsensitive)
 
+    /// "kr" and "kronor" mean the krona or krone of the Mac's own region; Swedish kronor elsewhere.
+    private var localKrona: String { ["SEK", "NOK", "DKK", "ISK"].contains(home) ? home : "SEK" }
+
     func convert(_ input: String) -> [Result] {
         let text = input.lowercased()
         guard let m = Self.pattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { return [] }
@@ -176,12 +179,15 @@ final class Converter {
         let toWord = group(4)
 
         // Currency (a target unit of mass turns "pounds" into weight).
-        if let from = Self.currencyNames[fromWord] ?? (fromWord.count == 3 && rates[fromWord.uppercased()] != nil
+        func currency(_ word: String) -> String? {
+            ["kr", "kronor", "krona", "kroner", "krone"].contains(word) ? localKrona : Self.currencyNames[word]
+        }
+        if let from = currency(fromWord) ?? (fromWord.count == 3 && rates[fromWord.uppercased()] != nil
                                                         ? fromWord.uppercased() : nil),
            !(fromWord.hasPrefix("pound") && toWord.flatMap({ Self.units[$0] }) is UnitMass) {
             let targets: [String]
             if let toWord {
-                guard let to = Self.currencyNames[toWord] ?? (rates[toWord.uppercased()] != nil ? toWord.uppercased() : nil)
+                guard let to = currency(toWord) ?? (rates[toWord.uppercased()] != nil ? toWord.uppercased() : nil)
                 else { return [] }
                 targets = [to]
             } else {

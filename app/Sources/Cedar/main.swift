@@ -212,13 +212,14 @@ if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "--quant-test" {
         for (r, _) in rows.sorted(by: { $0.1 > $1.1 }) { if !out.contains(docs[r]) { out.append(docs[r]) }; if out.count == 10 { break } }
         return out
     }
-    let queries = ["people using several chatbots for math and writing", "does AI debate help humans judge correctly", "LLMs that agree too much with users",
-        "erroneous examples in mathematics learning", "social conformity online", "conspiracy beliefs reduced by talking to AI", "pedagogical agents multiple tutors",
+    // General questions: what matters is that both ways of searching agree, on whatever library this Mac has.
+    let queries = ["people using several chatbots for math and writing", "does debate help people judge correctly", "assistants that agree too much",
+        "learning from wrong examples", "social conformity online", "changing beliefs by talking", "tutoring with more than one tutor",
         "computer vision textbook", "a rental agreement", "meeting notes from last month", "project plan and next steps",
-        "overhearing a dialogue and learning from it", "productive failure", "cognitive conflict between peers", "how many participants took part",
-        "detecting objects in images", "receipt for an order", "curriculum vitae", "belief updating after counterarguments", "trust in algorithms versus humans",
-        "AI dependence scale", "turn-taking in multi-party dialogue", "worked examples physics", "foundation model of human cognition",
-        "halvorsen", "sycophancy", "bank payment", "self explanation", "glacier", "asdf qwerty"]
+        "learning by listening to a conversation", "productive failure", "disagreement between peers", "how many participants took part",
+        "detecting objects in images", "receipt for an order", "curriculum vitae", "updating a belief after counterarguments",
+        "trust in algorithms versus humans", "a questionnaire and its validation", "turn-taking in conversation", "worked examples in physics",
+        "models of human cognition", "invoice", "flattery", "bank payment", "self explanation", "glacier", "asdf qwerty"]
     print("\(n) passages; \(queries.count) queries")
     for keep in [100, 300, 1000] {
         var top1 = 0, overlap = 0.0, zdiff = 0.0, tExact = 0.0, tFast = 0.0

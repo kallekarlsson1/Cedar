@@ -9,11 +9,13 @@ app="$dest/Cedar.app"
 version="${VERSION:-0.1.0}"
 
 [ -f "$here/app/Vendor/llama/lib/libllama.a" ] || "$here/scripts/build-llama.sh"   # compiles llama.cpp the first time
-(cd "$here/app" && swift build -c release)
+# -file-prefix-map: the binary records source paths relative to the project, not this Mac's folders.
+(cd "$here/app" && swift build -c release -Xswiftc -file-prefix-map -Xswiftc "$here=." -Xswiftc -debug-prefix-map -Xswiftc "$here=.")
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$here/app/.build/release/Cedar" "$app/Contents/MacOS/Cedar"
+strip -x "$app/Contents/MacOS/Cedar" 2>/dev/null || true      # no local symbols or debug paths in the shipped binary
 cp "$here/app/Resources/AppIcon.icns" "$here/app/Resources/Acknowledgements.txt" "$here/LICENSE" "$app/Contents/Resources/"
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

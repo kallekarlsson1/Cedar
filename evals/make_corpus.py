@@ -1,5 +1,5 @@
 """Writes a small made-up library to test search on: papers with author blocks and reference lists, notes, a
-duplicate, a text copy of a PDF and a scanned (image-only) PDF. Everything is invented; nothing personal.
+duplicate, a text copy of a PDF and a scanned (image-only) PDF. Every name, title and finding in it is invented; any resemblance to real people or papers is accidental.
 
     uvx --with pymupdf python evals/make_corpus.py evals/corpus.noindex
 
@@ -20,7 +20,7 @@ PAPERS = [
     ("3706598.pdf", "Quiet Saboteurs: Flattering Assistants Mislead Beginners", ["Noor Castellan", "Eamon Park"], 2025,
      "Assistants that flatter the user and agree with wrong ideas harm beginners during debugging tasks. Novices "
      "who received agreeable but incorrect feedback kept their mistakes longer than those who were challenged."),
-    ("debate_supervise.pdf", "Adversarial Debate Helps Judges Find the Truth", ["Lucien Marsh", "Odile Farrow"], 2023,
+    ("debate_judges.pdf", "Adversarial Debate Helps Judges Find the Truth", ["Lucien Marsh", "Odile Farrow"], 2023,
      "Two experts argue opposite sides of a reading comprehension question while a judge without access to the "
      "story decides who is right. Judges reach the truth more often from an adversarial exchange than from a "
      "single consultant."),
@@ -46,10 +46,10 @@ PAPERS = [
      "Students who napped after studying foreign words remembered more a week later. Time spent in deep sleep "
      "predicted the benefit; total nap length did not."),
 ]
-# Every other paper cites Halvorsen: the name is in many reference lists but in two author blocks.
-CITES = ["Halvorsen, M., & Renner, T. (2026). Human reasoning under plural assistant support. Proceedings of CHI.",
+# Every paper cites Halvorsen: the name is in every reference list but in two author blocks.
+CITES = ["Halvorsen, M., & Renner, T. (2026). Human reasoning under plural assistant support. Proceedings of the Made-Up Conference.",
          "Brennan, A. (2017). Slow-wave sleep and vocabulary retention. Journal of Sleep Research.",
-         "Marsh, L. (2023). Adversarial debate helps judges find the truth. arXiv."]
+         "Marsh, L. (2023). Adversarial debate helps judges find the truth. Invented Preprints."]
 NOTES = [
     ("Meeting notes 12 March.md", "# Meeting notes 12 March\n\nBudget for the field trip approved. Lena books the "
      "minibus; invoice number INV-20417 goes to accounting. Next meeting in April.\n"),
