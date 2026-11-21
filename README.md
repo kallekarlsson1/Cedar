@@ -13,6 +13,8 @@ Press ⌘Space, type what you remember, and read the result right there.</p>
 <img src="https://img.shields.io/badge/macOS-14%2B%20·%20Apple%20Silicon-lightgrey?style=flat-square" alt="macOS 14 or later, Apple Silicon">
 </p>
 
+<p align="center"><img src="docs/screenshot.png" width="820" alt="Cedar's search panel: results on the left, the matching PDF open in the reader on the right with the search word highlighted"></p>
+
 Spotlight treats every word in a PDF the same, so searching for an author returns every paper that cites them
 and buries the one they wrote. Cedar was built to fix that.
 
