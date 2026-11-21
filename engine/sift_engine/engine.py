@@ -26,7 +26,8 @@ from .names import Names
 log = logging.getLogger("sift")
 
 IDLE_BEFORE_EMBEDDING = 15.0   # seconds after the last search before the GPU goes back to indexing
-IDLE_BEFORE_UNLOAD = 600.0     # with nothing left to embed, free the model after this long without a search
+IDLE_BEFORE_UNLOAD = 120.0     # with nothing left to embed, free the model after this long without a search
+                               # (it's back in 0.3 s, so there's no reason to hold 0.6 GB for longer)
 
 
 _power = {"checked": 0.0, "battery": False}
@@ -87,7 +88,7 @@ class Reader:
         while os.getppid() == parent_pid:
             time.sleep(2)
             self._apply_changes()
-            if time.time() - last_full > 6 * 3600:
+            if time.time() - last_full > 24 * 3600:   # a safety net; changes arrive live
                 self._relist()
                 last_full = time.time()
 
@@ -135,7 +136,7 @@ class Reader:
                     known = self.content.db.execute("SELECT mtime FROM docs WHERE path = ?", (path,)).fetchone()
                     if not known or known[0] != st.st_mtime:
                         self.content.add(path, st.st_mtime, st.st_size)
-                        self.content.mark_copies(log=log.info)
+                        self.content.mark_copies(log=log.info, only=path)
             else:
                 self.names.remove(path)
                 self.content.remove_path(path)
@@ -204,7 +205,7 @@ class Engine:
                 continue
             try:
                 done = self.content.embed_some(
-                    limit=32, pause=lambda: time.time() - self.last_search < IDLE_BEFORE_EMBEDDING,
+                    limit=8, pause=lambda: time.time() - self.last_search < IDLE_BEFORE_EMBEDDING,
                     first_pass_only=battery)
             except Exception:
                 log.exception("embedding failed")

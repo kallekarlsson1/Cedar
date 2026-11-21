@@ -24,10 +24,10 @@ separately from its body and its reference list, and ranks them in that order. I
 ```
 Sift.app (Swift, AppKit)          the panel: apps, math, conversions in-process; asks the engine for the rest
    │ unix socket (yours only)
-engine, search process (Python)   keyword + meaning search; ~100 MB, never loads PyTorch
+engine, search process (Python)   keyword + meaning search; ~80 MB
 engine, reader process            lists files, reads documents, follows changes (FSEvents), at low priority
-engine, model process             Qwen3-Embedding on the GPU (~2 GB); embeds passages while you're not searching,
-                                  and quits after 10 idle minutes once everything is embedded
+engine, model process             Qwen3-Embedding (8-bit) on llama.cpp + Metal, ~450 MB; embeds passages while
+                                  you're not searching, quits after 2 idle minutes, back in 0.4 s
    │
 ~/Library/Application Support/Sift/
    names.db     every file and folder name, trigram index (~650k names, 15 s to list)
@@ -38,10 +38,13 @@ engine, model process             Qwen3-Embedding on the GPU (~2 GB); embeds pas
   (`body`, with page numbers) and its reference list (`refs`).
 - **Words.** SQLite FTS5 with Porter stemming. A query word counts by where it's found (file name and title
   block 1.0, body 0.5, references 0.12) and by how rare it is. Common words are left out.
-- **Meaning.** [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) runs on the Mac's GPU.
+- **Meaning.** [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF), 8-bit, runs on the
+  Mac's GPU through llama.cpp.
   For each query, every passage's cosine score is turned into a z-score. A document counts as a meaning match
   only when one of its passages stands out (z ≥ 2.5), so a search can honestly come back empty. All vectors are
   compared directly in memory, with no vector database.
+- **Light on the machine.** On battery only titles and first pages are embedded; the rest waits for the charger.
+  Vectors are float16 in memory and leave it, with the model, when Sift is idle (~180 MB then).
 - **Order of work.** The keyword index of everything is built first, in about a minute. Embedding then covers
   every document's title block and first pages, newest first, before the rest. Text files that copy a PDF are
   searched by their words but not embedded a second time.

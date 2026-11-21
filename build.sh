@@ -4,7 +4,7 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 app="$HOME/Applications/Sift.app"
 
-(cd "$here/engine" && uv sync --quiet)
+(cd "$here/engine" && CMAKE_ARGS="-DGGML_METAL=on" uv sync --quiet)   # compiles llama.cpp the first time
 (cd "$here/app" && swift build -c release)
 
 rm -rf "$app"

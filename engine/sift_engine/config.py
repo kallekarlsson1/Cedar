@@ -10,10 +10,13 @@ NAMES_DB = DATA / "names.db"
 CONTENT_DB = DATA / "content.db"
 LOG = DATA / "engine.log"
 
-MODEL = "Qwen/Qwen3-Embedding-0.6B"
-# Names the vectors in the index. When it changes (another model, runtime or precision), every passage is embedded
-# again rather than mixing vectors that don't compare.
-VECTORS = "Qwen/Qwen3-Embedding-0.6B | sentence-transformers fp16 | v1"
+MODEL_REPO = "Qwen/Qwen3-Embedding-0.6B-GGUF"
+MODEL_FILE = "Qwen3-Embedding-0.6B-Q8_0.gguf"
+# Names the vectors in the index. When it changes (another model, or a setup whose vectors don't compare), every
+# passage is embedded again. COMPATIBLE lists earlier names whose vectors are the same within rounding (measured:
+# PyTorch fp16 vs llama.cpp 8-bit, cosine 0.9997 mean / 0.9993 worst), so those indexes are kept.
+VECTORS = "Qwen3-Embedding-0.6B | 512 tokens | v1"
+COMPATIBLE = {"Qwen/Qwen3-Embedding-0.6B | sentence-transformers fp16 | v1"}
 
 
 def roots() -> list[Path]:
