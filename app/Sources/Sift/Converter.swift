@@ -4,7 +4,7 @@ import Foundation
 /// Exchange rates are the European Central Bank's daily reference rates (via frankfurter.dev): downloaded at most a few
 /// times a day, kept on disk, and never sent anything about what you type.
 final class Converter {
-    struct Result { let text: String; let copy: String; let note: String }
+    struct Result { let text: String; let result: String; let copy: String; let note: String }
 
     private(set) var rates: [String: Double] = [:]   // per 1 EUR
     private(set) var ratesDate = ""
@@ -185,7 +185,7 @@ final class Converter {
                 guard let rTo = rates[to] else { return nil }
                 let value = amount / rFrom * rTo
                 let shown = Self.money(value, to)
-                return Result(text: "\(Self.money(amount, from)) = \(shown)", copy: Self.plain(value),
+                return Result(text: "\(Self.money(amount, from)) = \(shown)", result: shown, copy: Self.plain(value),
                               note: "ECB rate from \(ratesDate)")
             }
         }
@@ -208,7 +208,8 @@ final class Converter {
         f.unitStyle = .medium
         f.numberFormatter.maximumFractionDigits = abs(value.value) < 10 ? 3 : 2
         let source = f.string(from: Measurement(value: amount, unit: fromUnit))
-        return [Result(text: "\(source) = \(f.string(from: value))", copy: Self.plain(value.value), note: "Unit conversion")]
+        let shown = f.string(from: value)
+        return [Result(text: "\(source) = \(shown)", result: shown, copy: Self.plain(value.value), note: "Unit conversion")]
     }
 
     private static func money(_ value: Double, _ code: String) -> String {

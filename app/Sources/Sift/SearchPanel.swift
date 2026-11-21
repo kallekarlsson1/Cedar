@@ -1,10 +1,13 @@
 import AppKit
+import PDFKit
 import Quartz
+import QuickLookThumbnailing
+import UniformTypeIdentifiers
 
 /// One row in the results.
 enum Item {
     case header(String)
-    case answer(text: String, copy: String, note: String)
+    case answer(text: String, result: String, copy: String, note: String)
     case app(Apps.App)
     case doc(EngineClient.Doc)
     case file(EngineClient.File)
@@ -18,6 +21,30 @@ enum Item {
         }
     }
     var selectable: Bool { if case .header = self { return false }; return true }
+}
+
+/// Which group a file goes in, as Spotlight groups them.
+enum Group: Int, CaseIterable {
+    case pdf, documents, folders, images, other
+    var title: String {
+        switch self {
+        case .pdf: return "PDF Documents"
+        case .documents: return "Documents"
+        case .folders: return "Folders"
+        case .images: return "Images"
+        case .other: return "Other"
+        }
+    }
+    static func of(path: String, isDir: Bool) -> Group {
+        if isDir { return .folders }
+        switch (path as NSString).pathExtension.lowercased() {
+        case "pdf": return .pdf
+        case "md", "markdown", "txt", "tex", "docx", "doc", "rtf", "odt", "pptx", "key", "xlsx", "numbers", "pages",
+             "html", "htm", "rst", "org", "csv", "epub": return .documents
+        case "jpg", "jpeg", "png", "heic", "gif", "webp", "tiff", "tif", "bmp", "svg", "raw", "dng": return .images
+        default: return .other
+        }
+    }
 }
 
 /// The floating panel: a borderless window that takes the keyboard without pulling the app in front.
@@ -34,6 +61,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
 
     private let panel: Panel
     private let field = NSTextField()
+    private let inline = NSTextField(labelWithString: "")   // the answer or top hit, in gray after what you typed
     private let table = NSTableView()
     private let scroll = NSScrollView()
     private let detail = DetailView()
@@ -44,22 +72,23 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
     private var deepWork: DispatchWorkItem?
     private var keyMonitor: Any?
     private var navigated = false      // moved through results since the last keystroke: Space previews
-    private var bodyHeight: NSLayoutConstraint!   // the results area; the window's height follows it
+    private var bodyHeight: NSLayoutConstraint!
 
-    private let width: CGFloat = 760
-    private let barHeight: CGFloat = 56
-    private let listWidth: CGFloat = 340
-    private let maxBody: CGFloat = 440
+    private let width: CGFloat = 820
+    private let barHeight: CGFloat = 60
+    private let listWidth: CGFloat = 330
+    private let bodyFull: CGFloat = 470
 
     init(engine: EngineClient, apps: Apps, converter: Converter, usage: Usage) {
         self.engine = engine
         self.apps = apps
         self.converter = converter
         self.usage = usage
-        panel = Panel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 56),
+        panel = Panel(contentRect: NSRect(x: 0, y: 0, width: 820, height: 60),
                       styleMask: [.nonactivatingPanel, .borderless, .fullSizeContentView], backing: .buffered, defer: false)
         super.init()
         build()
+        Thumbnails.shared.onReady = { [weak self] path in self?.thumbnailReady(path) }
     }
 
     // MARK: layout
@@ -75,28 +104,36 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
         panel.hasShadow = true
 
         let background = NSVisualEffectView()
-        background.material = .popover
+        background.material = .hudWindow
         background.blendingMode = .behindWindow
         background.state = .active
         background.wantsLayer = true
-        background.layer?.cornerRadius = 16
+        background.layer?.cornerRadius = 22
+        background.layer?.cornerCurve = .continuous
         background.layer?.masksToBounds = true
+        background.layer?.borderWidth = 0.5
+        background.layer?.borderColor = NSColor.white.withAlphaComponent(0.15).cgColor
         panel.contentView = background
 
         let glass = NSImageView(image: NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)!)
-        glass.symbolConfiguration = .init(pointSize: 20, weight: .regular)
+        glass.symbolConfiguration = .init(pointSize: 21, weight: .medium)
         glass.contentTintColor = .secondaryLabelColor
         glass.translatesAutoresizingMaskIntoConstraints = false
 
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
-        field.font = .systemFont(ofSize: 24, weight: .light)
+        field.font = .systemFont(ofSize: 25, weight: .regular)
         field.placeholderString = "Sift Search"
         field.delegate = self
         field.cell?.isScrollable = true
         field.cell?.wraps = false
         field.translatesAutoresizingMaskIntoConstraints = false
+
+        inline.font = field.font
+        inline.textColor = .tertiaryLabelColor
+        inline.lineBreakMode = .byTruncatingTail
+        inline.isHidden = true
 
         divider.boxType = .separator
         divider.translatesAutoresizingMaskIntoConstraints = false
@@ -118,6 +155,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
+        scroll.contentInsets = NSEdgeInsets(top: 4, left: 0, bottom: 6, right: 0)
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
         detail.translatesAutoresizingMaskIntoConstraints = false
@@ -125,14 +163,14 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
         line.boxType = .separator
         line.translatesAutoresizingMaskIntoConstraints = false
 
-        for v in [glass, field, divider, scroll, line, detail] { background.addSubview(v) }
+        for v in [glass, field, inline, divider, scroll, line, detail] { background.addSubview(v) }
         // Without a set height, Auto Layout shrinks the window to the smallest size its contents allow (just the bar).
         bodyHeight = scroll.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
-            glass.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 18),
+            glass.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 20),
             glass.centerYAnchor.constraint(equalTo: background.topAnchor, constant: barHeight / 2),
             field.leadingAnchor.constraint(equalTo: glass.trailingAnchor, constant: 10),
-            field.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -18),
+            field.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -20),
             field.centerYAnchor.constraint(equalTo: glass.centerYAnchor),
             divider.topAnchor.constraint(equalTo: background.topAnchor, constant: barHeight),
             divider.leadingAnchor.constraint(equalTo: background.leadingAnchor),
@@ -159,19 +197,15 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
 
     // MARK: testing
 
-    /// Types `query` into the panel, waits for the answers, and saves a picture of the panel with layout facts:
-    /// `Sift --snapshot "query" out.png`.
-    func debugSnapshot(_ query: String, to path: String) {
+    /// Types `query` into the panel, waits for the answers, and saves a picture of the panel:
+    /// `Sift --snapshot "query" out.png [row]`.
+    func debugSnapshot(_ query: String, to path: String, row: Int? = nil) {
         show()
         field.stringValue = query
         run(query)
-        RunLoop.main.run(until: Date().addingTimeInterval(2.0))
-        print("items:", items.count, "rows:", table.numberOfRows, "selected:", table.selectedRow)
-        print("panel:", panel.frame, "visible:", panel.isVisible, "key:", panel.isKeyWindow)
-        print("scroll:", scroll.frame, "hidden:", scroll.isHidden, "table:", table.frame, "clip:", scroll.contentView.bounds)
-        print("detail:", detail.frame, "hidden:", detail.isHidden, "column width:", table.tableColumns.first?.width ?? -1)
-        if table.numberOfRows > 0 { print("row 0 rect:", table.rect(ofRow: 0), "view:", table.view(atColumn: 0, row: 0, makeIfNecessary: true)?.frame ?? .zero) }
-        for (i, item) in items.prefix(8).enumerated() { print("  ", i, item) }
+        RunLoop.main.run(until: Date().addingTimeInterval(2.5))
+        if let row, row < items.count { select(row); RunLoop.main.run(until: Date().addingTimeInterval(1.5)) }
+        print("items:", items.count, "selected:", table.selectedRow, "panel:", panel.frame)
         if let view = panel.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
             view.cacheDisplay(in: view.bounds, to: rep)
             try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
@@ -187,7 +221,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
     func show() {
         let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
         if let frame = screen?.visibleFrame {
-            let top = frame.maxY - frame.height * 0.22
+            let top = frame.maxY - frame.height * 0.2
             panel.setFrameTopLeftPoint(NSPoint(x: frame.midX - width / 2, y: top))
         }
         resize()
@@ -206,17 +240,39 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
     }
 
     private func resize() {
-        let rows = items.reduce(CGFloat(0)) { $0 + rowHeight($1) }
-        let body = items.isEmpty ? 0 : min(max(rows, 260), maxBody)
+        let body: CGFloat = items.isEmpty ? 0 : bodyFull
         bodyHeight.constant = body
         divider.isHidden = items.isEmpty
-        let height = barHeight + 1 + body        // the bar, the divider line, the results
+        let height = barHeight + 1 + body
         var frame = panel.frame
         let top = frame.maxY
         frame.size = NSSize(width: width, height: height)
         frame.origin.y = top - height          // grow downwards from the bar
         panel.setFrame(frame, display: true)
         panel.contentView?.layoutSubtreeIfNeeded()
+        updateInline()
+    }
+
+    /// The answer ("= 121,57 kr") or the top hit ("— Safari") in gray, right after what you typed.
+    private func updateInline() {
+        let typed = field.stringValue
+        var hint: String?
+        if !typed.trimmingCharacters(in: .whitespaces).isEmpty {
+            for item in items {
+                if case .answer(_, let result, _, _) = item { hint = " = " + result; break }
+                if case .app(let a) = item { hint = " — " + a.name; break }
+                if case .header = item { continue }
+                break
+            }
+        }
+        guard let hint, let font = field.font else { inline.isHidden = true; return }
+        let typedWidth = (typed as NSString).size(withAttributes: [.font: font]).width
+        let x = field.frame.minX + typedWidth + 3
+        let available = field.frame.maxX - x
+        guard available > 40 else { inline.isHidden = true; return }
+        inline.stringValue = hint
+        inline.frame = NSRect(x: x, y: field.frame.minY, width: available, height: field.frame.height)
+        inline.isHidden = false
     }
 
     // MARK: searching
@@ -256,38 +312,59 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
     private func rebuild(_ q: String) {
         var answers: [Item] = []
         if let v = Calculator.evaluate(q) {
-            answers.append(.answer(text: "= " + Calculator.format(v), copy: Calculator.format(v), note: "Calculator"))
+            let r = Calculator.format(v)
+            answers.append(.answer(text: q + " = " + r, result: r, copy: r, note: "Calculator"))
         }
-        for r in converter.convert(q) { answers.append(.answer(text: r.text, copy: r.copy, note: r.note)) }
+        for r in converter.convert(q) {
+            answers.append(.answer(text: r.text, result: r.result, copy: r.copy, note: r.note))
+        }
 
         let appHits = apps.search(q).map { ($0.0, $0.1 + usage.boost($0.0.url.path)) }
-            .sorted { $0.1 > $1.1 }.prefix(4)
-        let docs = (answer?.docs ?? []).prefix(8)
-        let files = (answer?.files ?? []).map { ($0, $0.score + usage.boost($0.path)) }
-            .sorted { $0.1 > $1.1 }.prefix(6)
+            .filter { $0.1 >= 40 }.sorted { $0.1 > $1.1 }
 
-        var appSection: [Item] = appHits.isEmpty ? [] : [.header("Applications")] + appHits.map { .app($0.0) }
-        let docSection: [Item] = docs.isEmpty ? [] : [.header("Documents")] + docs.map { .doc($0) }
-        var fileSection: [Item] = files.isEmpty ? [] : [.header("Folders & Files")] + files.map { .file($0.0) }
-        if (appHits.first?.1 ?? 0) < 40 { appSection = [] }
+        // Documents from the engine keep its order (meaning + words); name matches follow within each group.
+        var grouped: [Group: [Item]] = [:]
+        var seen = Set<String>()
+        for d in answer?.docs ?? [] where seen.insert(d.path).inserted {
+            grouped[Group.of(path: d.path, isDir: false), default: []].append(.doc(d))
+        }
+        let files = (answer?.files ?? []).map { ($0, $0.score + usage.boost($0.path)) }.sorted { $0.1 > $1.1 }
+        for (f, _) in files where seen.insert(f.path).inserted {
+            grouped[Group.of(path: f.path, isDir: f.dir), default: []].append(.file(f))
+        }
 
-        var out: [Item] = answers.isEmpty ? [] : [.header(answers.count == 1 ? "Answer" : "Answers")] + answers
-        let appsFirst = (appHits.first?.1 ?? 0) >= 74
-        let filesFirst = (files.first?.1 ?? 0) >= 100 && !appsFirst
-        if appsFirst { out += appSection; appSection = [] }
-        if filesFirst { out += fileSection; fileSection = [] }
-        out += docSection + fileSection + appSection
+        // Top hit: an answer, a strongly matching app, a file named exactly what you typed, or the best document.
+        var top: Item?
+        if let first = answers.first { top = first; answers.removeFirst() }
+        else if let a = appHits.first, a.1 >= 74 { top = .app(a.0) }
+        else if let f = files.first, f.1 >= 100 { top = .file(f.0) }
+        else if let d = answer?.docs.first { top = .doc(d) }
+        else if let a = appHits.first { top = .app(a.0) }
+        else if let f = files.first { top = .file(f.0) }
+
+        var out: [Item] = []
+        if let top { out += [.header("Top Hit"), top] }
+        let topPath = top?.path
+        if !answers.isEmpty { out += [.header("Conversions")] + answers }
+        let appRows = appHits.prefix(4).map { Item.app($0.0) }.filter { $0.path != topPath }
+        if !appRows.isEmpty { out += [.header("Applications")] + appRows.prefix(3) }
+        let limits: [Group: Int] = [.pdf: 6, .documents: 6, .folders: 4, .images: 4, .other: 4]
+        for group in Group.allCases {
+            let rows = (grouped[group] ?? []).filter { $0.path != topPath }.prefix(limits[group] ?? 4)
+            if !rows.isEmpty { out += [.header(group.title)] + rows }
+        }
         show(items: out)
     }
 
     private func show(items new: [Item]) {
         let keep = table.selectedRow >= 0 && table.selectedRow < items.count ? items[table.selectedRow].path : nil
+        let wasEmpty = items.isEmpty
         items = new
         table.reloadData()
         var row = items.firstIndex { $0.selectable } ?? -1
         if navigated, let keep, let same = items.firstIndex(where: { $0.path == keep }) { row = same }
         select(row)
-        resize()
+        if wasEmpty != items.isEmpty { resize() } else { updateInline() }
     }
 
     private func select(_ row: Int) {
@@ -298,6 +375,11 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
             table.deselectAll(nil)
         }
         detail.show(row >= 0 && row < items.count ? items[row] : nil, query: field.stringValue)
+    }
+
+    private func thumbnailReady(_ path: String) {
+        let rows = IndexSet(items.indices.filter { items[$0].path == path })
+        if !rows.isEmpty { table.reloadData(forRowIndexes: rows, columnIndexes: [0]) }
     }
 
     // MARK: keys
@@ -362,7 +444,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
     @objc private func openSelected() {
         guard let item = selected else { return }
         switch item {
-        case .answer(_, let copy, _):
+        case .answer(_, _, let copy, _):
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(copy, forType: .string)
         case .app(let app):
@@ -371,10 +453,9 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
         case .doc(let d):
             usage.opened(d.path)
             // Preview and most apps read the find pasteboard: ⌘G jumps to the words you searched for.
-            let words = field.stringValue.trimmingCharacters(in: .whitespaces)
             let find = NSPasteboard(name: .find)
             find.clearContents()
-            find.setString(words, forType: .string)
+            find.setString(field.stringValue.trimmingCharacters(in: .whitespaces), forType: .string)
             NSWorkspace.shared.open(URL(fileURLWithPath: d.path))
         case .file(let f):
             usage.opened(f.path)
@@ -394,7 +475,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
         guard let item = selected else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
-        if case .answer(_, let copy, _) = item {
+        if case .answer(_, _, let copy, _) = item {
             pb.setString(copy, forType: .string)
         } else if let path = item.path {
             pb.writeObjects([URL(fileURLWithPath: path) as NSURL])
@@ -415,168 +496,325 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
 
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
 
-    private func rowHeight(_ item: Item) -> CGFloat {
-        if case .header = item { return 26 }
-        return 44
+    private func isTopHit(_ row: Int) -> Bool {
+        guard row > 0, case .header("Top Hit") = items[row - 1] else { return false }
+        return true
     }
 
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { rowHeight(items[row]) }
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        if case .header = items[row] { return 26 }
+        return isTopHit(row) ? 46 : 32
+    }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let item = items[row]
         if case .header(let title) = item {
             let label = NSTextField(labelWithString: title)
             label.font = .systemFont(ofSize: 11, weight: .semibold)
-            label.textColor = .tertiaryLabelColor
+            label.textColor = .secondaryLabelColor
             let cell = NSView()
             label.translatesAutoresizingMaskIntoConstraints = false
             cell.addSubview(label)
             NSLayoutConstraint.activate([
                 label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 16),
-                label.bottomAnchor.constraint(equalTo: cell.bottomAnchor, constant: -4),
+                label.bottomAnchor.constraint(equalTo: cell.bottomAnchor, constant: -5),
             ])
             return cell
         }
-        let cell = ResultCell()
+        let cell = ResultCell(big: isTopHit(row))
         cell.fill(item)
         return cell
     }
 }
 
-/// Icon, title and one line under it.
+/// Thumbnail (or icon), name, and the folder it's in.
 final class ResultCell: NSView {
     private let icon = NSImageView()
     private let title = NSTextField(labelWithString: "")
-    private let subtitle = NSTextField(labelWithString: "")
+    private let trailing = NSTextField(labelWithString: "")
 
-    init() {
+    init(big: Bool) {
         super.init(frame: .zero)
-        title.font = .systemFont(ofSize: 13)
+        let size: CGFloat = big ? 32 : 22
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        title.font = .systemFont(ofSize: big ? 14 : 13, weight: big ? .medium : .regular)
         title.lineBreakMode = .byTruncatingTail
-        subtitle.font = .systemFont(ofSize: 11)
-        subtitle.textColor = .secondaryLabelColor
-        subtitle.lineBreakMode = .byTruncatingMiddle
-        for v in [icon, title, subtitle] as [NSView] {
+        trailing.font = .systemFont(ofSize: 11)
+        trailing.textColor = .tertiaryLabelColor
+        trailing.lineBreakMode = .byTruncatingHead
+        trailing.alignment = .right
+        for v in [icon, title, trailing] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
         NSLayoutConstraint.activate([
             icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             icon.centerYAnchor.constraint(equalTo: centerYAnchor),
-            icon.widthAnchor.constraint(equalToConstant: 28),
-            icon.heightAnchor.constraint(equalToConstant: 28),
-            title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 10),
-            title.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
-            title.bottomAnchor.constraint(equalTo: centerYAnchor, constant: 1),
-            subtitle.leadingAnchor.constraint(equalTo: title.leadingAnchor),
-            subtitle.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
-            subtitle.topAnchor.constraint(equalTo: centerYAnchor, constant: 2),
+            icon.widthAnchor.constraint(equalToConstant: size),
+            icon.heightAnchor.constraint(equalToConstant: size),
+            title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 9),
+            title.centerYAnchor.constraint(equalTo: centerYAnchor),
+            trailing.leadingAnchor.constraint(greaterThanOrEqualTo: title.trailingAnchor, constant: 8),
+            trailing.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            trailing.centerYAnchor.constraint(equalTo: centerYAnchor),
+            trailing.widthAnchor.constraint(lessThanOrEqualToConstant: 110),
         ])
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        subtitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        trailing.setContentCompressionResistancePriority(.defaultLow - 1, for: .horizontal)
+        trailing.setContentHuggingPriority(.required, for: .horizontal)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     func fill(_ item: Item) {
         switch item {
-        case .answer(let text, _, let note):
-            icon.image = NSImage(systemSymbolName: note == "Calculator" ? "equal.square" : "arrow.left.arrow.right.square",
+        case .answer(let text, _, _, let note):
+            icon.image = NSImage(systemSymbolName: note == "Calculator" ? "plus.forwardslash.minus" : "arrow.left.arrow.right",
                                  accessibilityDescription: nil)
-            icon.symbolConfiguration = .init(pointSize: 20, weight: .regular)
+            icon.contentTintColor = .secondaryLabelColor
             title.stringValue = text
-            subtitle.stringValue = note
+            trailing.stringValue = note == "Calculator" ? "" : note.hasPrefix("ECB") ? "Currency" : "Units"
         case .app(let app):
             icon.image = Icons.shared.icon(app.url.path)
             title.stringValue = app.name
-            subtitle.stringValue = "Application"
+            trailing.stringValue = ""
         case .doc(let d):
-            icon.image = Icons.shared.icon(d.path)
-            let name = (d.path as NSString).lastPathComponent
-            title.stringValue = d.title ?? name
-            subtitle.stringValue = d.title == nil ? Paths.short((d.path as NSString).deletingLastPathComponent) : name
+            icon.image = Thumbnails.shared.image(for: d.path)
+            title.stringValue = d.title ?? (d.path as NSString).lastPathComponent
+            trailing.stringValue = Self.folder(d.path)
         case .file(let f):
-            icon.image = Icons.shared.icon(f.path)
+            icon.image = Thumbnails.shared.image(for: f.path)
             title.stringValue = f.name
-            subtitle.stringValue = Paths.short((f.path as NSString).deletingLastPathComponent)
+            trailing.stringValue = Self.folder(f.path)
         case .header: break
         }
     }
+
+    static func folder(_ path: String) -> String {
+        ((path as NSString).deletingLastPathComponent as NSString).lastPathComponent
+    }
 }
 
-/// The right side: what the selected result is, where it is, and the passage that matched.
+/// The right side: a preview (a PDF at the page that matched, with your words highlighted; Quick Look for the
+/// rest), then what the file is and where it lives.
 final class DetailView: NSView {
-    private let icon = NSImageView()
+    private let previewArea = NSView()
+    private let pdfView = PDFView()
+    private let quickLook: QLPreviewView = QLPreviewView(frame: .zero, style: .compact)!
+    private let bigIcon = NSImageView()
+    private let bigText = NSTextField(wrappingLabelWithString: "")
     private let title = NSTextField(wrappingLabelWithString: "")
-    private let place = NSTextField(wrappingLabelWithString: "")
+    private let facts = NSTextField(wrappingLabelWithString: "")
     private let snippet = NSTextField(wrappingLabelWithString: "")
     private let hint = NSTextField(labelWithString: "")
+    private var loading = 0
 
     init() {
         super.init(frame: .zero)
-        title.font = .systemFont(ofSize: 15, weight: .semibold)
-        title.maximumNumberOfLines = 4
-        place.font = .systemFont(ofSize: 11)
-        place.textColor = .secondaryLabelColor
-        place.maximumNumberOfLines = 4
-        snippet.font = .systemFont(ofSize: 12)
-        snippet.textColor = .labelColor
-        snippet.maximumNumberOfLines = 12
+        pdfView.autoScales = true
+        pdfView.displayMode = .singlePage
+        pdfView.displaysPageBreaks = false
+        pdfView.backgroundColor = .clear
+        quickLook.shouldCloseWithWindow = false
+        bigIcon.imageScaling = .scaleProportionallyUpOrDown
+        bigText.font = .systemFont(ofSize: 30, weight: .medium)
+        bigText.alignment = .center
+        for v in [pdfView, quickLook, bigIcon, bigText] as [NSView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            previewArea.addSubview(v)
+        }
+        NSLayoutConstraint.activate([
+            pdfView.topAnchor.constraint(equalTo: previewArea.topAnchor),
+            pdfView.bottomAnchor.constraint(equalTo: previewArea.bottomAnchor),
+            pdfView.leadingAnchor.constraint(equalTo: previewArea.leadingAnchor),
+            pdfView.trailingAnchor.constraint(equalTo: previewArea.trailingAnchor),
+            quickLook.topAnchor.constraint(equalTo: previewArea.topAnchor),
+            quickLook.bottomAnchor.constraint(equalTo: previewArea.bottomAnchor),
+            quickLook.leadingAnchor.constraint(equalTo: previewArea.leadingAnchor),
+            quickLook.trailingAnchor.constraint(equalTo: previewArea.trailingAnchor),
+            bigIcon.centerXAnchor.constraint(equalTo: previewArea.centerXAnchor),
+            bigIcon.centerYAnchor.constraint(equalTo: previewArea.centerYAnchor),
+            bigIcon.widthAnchor.constraint(equalToConstant: 128),
+            bigIcon.heightAnchor.constraint(equalToConstant: 128),
+            bigText.centerYAnchor.constraint(equalTo: previewArea.centerYAnchor),
+            bigText.leadingAnchor.constraint(equalTo: previewArea.leadingAnchor, constant: 10),
+            bigText.trailingAnchor.constraint(equalTo: previewArea.trailingAnchor, constant: -10),
+        ])
+
+        title.font = .systemFont(ofSize: 14, weight: .semibold)
+        title.maximumNumberOfLines = 2
+        title.lineBreakMode = .byTruncatingTail
+        facts.maximumNumberOfLines = 6
+        snippet.maximumNumberOfLines = 4
+        snippet.lineBreakMode = .byTruncatingTail
         hint.font = .systemFont(ofSize: 10)
         hint.textColor = .tertiaryLabelColor
-        let stack = NSStackView(views: [icon, title, place, snippet])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        hint.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
-        addSubview(hint)
+        for v in [previewArea, title, facts, snippet, hint] as [NSView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(v)
+        }
         NSLayoutConstraint.activate([
-            icon.widthAnchor.constraint(equalToConstant: 56),
-            icon.heightAnchor.constraint(equalToConstant: 56),
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 20),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
-            hint.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+            previewArea.topAnchor.constraint(equalTo: topAnchor, constant: 14),
+            previewArea.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            previewArea.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            previewArea.heightAnchor.constraint(equalToConstant: 250),
+            title.topAnchor.constraint(equalTo: previewArea.bottomAnchor, constant: 12),
+            title.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+            title.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
+            facts.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 8),
+            facts.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+            facts.trailingAnchor.constraint(equalTo: title.trailingAnchor),
+            snippet.topAnchor.constraint(equalTo: facts.bottomAnchor, constant: 8),
+            snippet.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+            snippet.trailingAnchor.constraint(equalTo: title.trailingAnchor),
+            snippet.bottomAnchor.constraint(lessThanOrEqualTo: hint.topAnchor, constant: -6),
+            hint.leadingAnchor.constraint(equalTo: title.leadingAnchor),
             hint.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
         ])
-        for v in [title, place, snippet] { v.preferredMaxLayoutWidth = 370 }
+        for v in [title, facts, snippet] { v.preferredMaxLayoutWidth = 450 }
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
+    private enum Mode { case pdf, quickLook, icon, text }
+
+    private func use(_ mode: Mode) {
+        pdfView.isHidden = mode != .pdf
+        quickLook.isHidden = mode != .quickLook
+        bigIcon.isHidden = mode != .icon
+        bigText.isHidden = mode != .text
+    }
+
     func show(_ item: Item?, query: String) {
         isHidden = item == nil
+        loading += 1
         guard let item else { return }
         snippet.attributedStringValue = NSAttributedString()
-        hint.stringValue = "↩ Open   ⌘↩ Show in Finder   ⌘Y Preview   ⌘C Copy"
+        snippet.isHidden = true
+        hint.stringValue = "↩ Open    ⌘↩ Show in Finder    ⌘Y Quick Look    ⌘C Copy"
         switch item {
-        case .answer(let text, _, let note):
-            icon.image = NSImage(systemSymbolName: "equal.square", accessibilityDescription: nil)
-            title.stringValue = text
-            place.stringValue = note
+        case .answer(_, let result, _, let note):
+            use(.text)
+            bigText.stringValue = result
+            title.stringValue = note == "Calculator" ? "Calculator" : note.hasPrefix("ECB") ? "Currency conversion" : "Unit conversion"
+            facts.attributedStringValue = Self.facts([("Source", note)])
             hint.stringValue = "↩ Copy result"
         case .app(let app):
-            icon.image = Icons.shared.icon(app.url.path)
+            use(.icon)
+            bigIcon.image = Icons.shared.icon(app.url.path)
             title.stringValue = app.name
-            place.stringValue = Paths.short(app.url.path)
-            hint.stringValue = "↩ Open   ⌘↩ Show in Finder"
+            let version = Bundle(url: app.url)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            facts.attributedStringValue = Self.facts([("Kind", "Application"), ("Version", version ?? "–"),
+                                                      ("Where", Paths.short(app.url.path))])
+            hint.stringValue = "↩ Open    ⌘↩ Show in Finder"
         case .doc(let d):
-            icon.image = Icons.shared.icon(d.path)
             title.stringValue = d.title ?? (d.path as NSString).lastPathComponent
-            var where_ = Paths.short(d.path)
-            if let page = d.page, let pages = d.pages { where_ += "\nPage \(page) of \(pages)" }
-            else if let pages = d.pages { where_ += "\n\(pages) pages" }
-            where_ += Paths.modified(d.path)
-            place.stringValue = where_
-            if let s = d.snippet { snippet.attributedStringValue = Self.highlight(s) }
+            var rows = Self.fileFacts(d.path)
+            if let page = d.page, let pages = d.pages { rows.insert(("Match", "page \(page) of \(pages)"), at: 1) }
+            facts.attributedStringValue = Self.facts(rows)
+            if d.path.lowercased().hasSuffix(".pdf") {
+                showPDF(d.path, page: d.page, query: query)
+            } else {
+                showQuickLook(d.path)
+                if let s = d.snippet {
+                    snippet.attributedStringValue = Self.highlight(s)
+                    snippet.isHidden = false
+                }
+            }
         case .file(let f):
-            icon.image = Icons.shared.icon(f.path)
             title.stringValue = f.name
-            place.stringValue = Paths.short(f.path) + Paths.modified(f.path)
+            facts.attributedStringValue = Self.facts(Self.fileFacts(f.path))
+            if f.path.lowercased().hasSuffix(".pdf") { showPDF(f.path, page: nil, query: query) }
+            else if f.dir { use(.icon); bigIcon.image = Icons.shared.icon(f.path) }
+            else { showQuickLook(f.path) }
         case .header: break
         }
+    }
+
+    private func showQuickLook(_ path: String) {
+        use(.quickLook)
+        quickLook.previewItem = URL(fileURLWithPath: path) as NSURL
+    }
+
+    /// The page that matched, with the words you typed highlighted.
+    private func showPDF(_ path: String, page: Int?, query: String) {
+        use(.pdf)
+        let token = loading
+        let words = query.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init).filter { $0.count >= 3 }
+        if pdfView.document?.documentURL?.path == path {
+            go(to: page, words: words)
+            return
+        }
+        pdfView.document = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            let doc = PDFDocument(url: URL(fileURLWithPath: path))
+            DispatchQueue.main.async {
+                guard token == self.loading, let doc else { return }
+                self.pdfView.document = doc
+                self.go(to: page, words: words)
+            }
+        }
+    }
+
+    private func go(to page: Int?, words: [String]) {
+        guard let doc = pdfView.document else { return }
+        let index = max(0, min((page ?? 1) - 1, doc.pageCount - 1))
+        guard let pdfPage = doc.page(at: index) else { return }
+        pdfView.go(to: pdfPage)
+        var marks: [PDFSelection] = []
+        if let text = pdfPage.string as NSString? {
+            for word in words {
+                var range = NSRange(location: 0, length: text.length)
+                while marks.count < 60 {
+                    let found = text.range(of: word, options: [.caseInsensitive, .diacriticInsensitive], range: range)
+                    if found.location == NSNotFound { break }
+                    if let sel = pdfPage.selection(for: found) {
+                        sel.color = NSColor.systemYellow.withAlphaComponent(0.6)
+                        marks.append(sel)
+                    }
+                    range = NSRange(location: found.location + found.length, length: text.length - found.location - found.length)
+                }
+            }
+        }
+        pdfView.highlightedSelections = marks
+    }
+
+    private static func fileFacts(_ path: String) -> [(String, String)] {
+        let url = URL(fileURLWithPath: path)
+        let values = try? url.resourceValues(forKeys: [.localizedTypeDescriptionKey, .fileSizeKey, .contentModificationDateKey,
+                                                       .isDirectoryKey])
+        var rows: [(String, String)] = [("Kind", values?.localizedTypeDescription ?? "File")]
+        if values?.isDirectory != true, let size = values?.fileSize {
+            rows.append(("Size", ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)))
+        }
+        if let date = values?.contentModificationDate {
+            let f = DateFormatter()
+            f.dateStyle = .medium
+            f.timeStyle = .short
+            f.doesRelativeDateFormatting = true
+            rows.append(("Modified", f.string(from: date)))
+        }
+        rows.append(("Where", Paths.short((path as NSString).deletingLastPathComponent)))
+        return rows
+    }
+
+    /// "Kind   PDF document" lines, labels in gray.
+    private static func facts(_ rows: [(String, String)]) -> NSAttributedString {
+        let out = NSMutableAttributedString()
+        let style = NSMutableParagraphStyle()
+        style.tabStops = [NSTextTab(textAlignment: .left, location: 72)]
+        style.headIndent = 72
+        style.lineSpacing = 2
+        let label: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11),
+                                                    .foregroundColor: NSColor.tertiaryLabelColor, .paragraphStyle: style]
+        let value: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11),
+                                                    .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: style]
+        for (i, (k, v)) in rows.enumerated() {
+            out.append(NSAttributedString(string: k + "\t", attributes: label))
+            out.append(NSAttributedString(string: v + (i < rows.count - 1 ? "\n" : ""), attributes: value))
+        }
+        return out
     }
 
     /// «matched words» in bold.
@@ -602,15 +840,6 @@ enum Paths {
         let home = NSHomeDirectory()
         return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
     }
-    static func modified(_ path: String) -> String {
-        guard let date = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
-        else { return "" }
-        let f = DateFormatter()
-        f.dateStyle = .medium
-        f.timeStyle = .short
-        f.doesRelativeDateFormatting = true
-        return "\nModified " + f.string(from: date)
-    }
 }
 
 final class Icons {
@@ -621,5 +850,36 @@ final class Icons {
         let image = NSWorkspace.shared.icon(forFile: path)
         cache.setObject(image, forKey: path as NSString)
         return image
+    }
+}
+
+/// Quick Look thumbnails (a PDF's first page, a picture itself), made in the background; the icon until then.
+final class Thumbnails {
+    static let shared = Thumbnails()
+    var onReady: ((String) -> Void)?
+    private let cache = NSCache<NSString, NSImage>()
+    private var pending = Set<String>()
+
+    func image(for path: String) -> NSImage {
+        if let hit = cache.object(forKey: path as NSString) { return hit }
+        let icon = Icons.shared.icon(path)
+        guard !pending.contains(path) else { return icon }
+        pending.insert(path)
+        let request = QLThumbnailGenerator.Request(fileAt: URL(fileURLWithPath: path), size: CGSize(width: 64, height: 64),
+                                                   scale: NSScreen.main?.backingScaleFactor ?? 2,
+                                                   representationTypes: .thumbnail)
+        QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self] rep, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.pending.remove(path)
+                if let rep {
+                    self.cache.setObject(rep.nsImage, forKey: path as NSString)
+                    self.onReady?(path)
+                } else {
+                    self.cache.setObject(icon, forKey: path as NSString)
+                }
+            }
+        }
+        return icon
     }
 }

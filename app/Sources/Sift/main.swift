@@ -149,7 +149,8 @@ if CommandLine.arguments.count > 3, CommandLine.arguments[1] == "--snapshot" {
     let apps = Apps()
     RunLoop.main.run(until: Date().addingTimeInterval(0.5))
     let search = SearchController(engine: engine, apps: apps, converter: Converter(dataDir: data), usage: Usage(dataDir: data))
-    search.debugSnapshot(CommandLine.arguments[2], to: CommandLine.arguments[3])
+    search.debugSnapshot(CommandLine.arguments[2], to: CommandLine.arguments[3],
+                         row: CommandLine.arguments.count > 4 ? Int(CommandLine.arguments[4]) : nil)
     exit(0)
 }
 let delegate = AppDelegate()
