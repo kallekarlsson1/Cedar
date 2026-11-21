@@ -8,8 +8,8 @@ public struct FileHit: Codable {
     public let modified: Double?
 }
 
-/// Every file and folder name under the roots. Any part of a name matches in a few milliseconds (trigram index);
-/// files in dataset folders (more than `Config.crowded` entries) are found by how their name starts instead.
+/// Index of file and folder names. Names are matched on any substring through a trigram index, except
+/// files in dataset folders (see `Config.crowded`), which are matched by prefix only.
 public final class Names {
     static let schema = """
     CREATE TABLE IF NOT EXISTS entries(
@@ -18,8 +18,8 @@ public final class Names {
     CREATE INDEX IF NOT EXISTS entries_name ON entries(name);
     CREATE VIRTUAL TABLE IF NOT EXISTS names USING fts5(name, tokenize='trigram remove_diacritics 1');
     """
-    let db: Database        // writing
-    let read: Database      // searching
+    let db: Database   // writes
+    let read: Database   // searching
 
     public init() throws {
         try FileManager.default.createDirectory(at: Config.data, withIntermediateDirectories: true)
@@ -37,7 +37,7 @@ public final class Names {
         return version < 2 || count() == 0
     }
 
-    /// What's directly inside a folder and worth listing.
+    /// Direct children of a folder, minus skipped names.
     static func list(_ folder: String) -> [Entry] {
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder) else { return [] }
         let kept = names.filter { !$0.hasPrefix(".") && !Config.skipNames.contains($0) }
@@ -57,7 +57,7 @@ public final class Names {
         return out
     }
 
-    /// Everything under `root`, folder by folder.
+    /// Visits everything under `root`.
     static func walk(_ root: String, _ visit: (Entry) throws -> Void) rethrows {
         var stack = [root]
         while let folder = stack.popLast() {
@@ -77,7 +77,7 @@ public final class Names {
         }
     }
 
-    /// Lists everything again into fresh tables, then swaps them in; searches keep working meanwhile.
+    /// Rebuilds the index into new tables and swaps them in, so searches keep working during the rebuild.
     public func rebuild(log: (String) -> Void = { _ in }) throws {
         let started = Date()
         try db.execute("""
@@ -111,8 +111,8 @@ public final class Names {
         log("names: \(count()) entries in \(Int(Date().timeIntervalSince(started)))s")
     }
 
-    /// Finds what changed while Cedar wasn't running, without listing everything: a folder's modification time
-    /// changes when something in it is added, removed or renamed, so only folders whose time moved are read again.
+    /// Finds changes made while the engine wasn't running. A folder's mtime changes when an entry is added,
+    /// removed or renamed, so only folders whose mtime moved are listed again.
     @discardableResult
     public func catchUp(log: (String) -> Void = { _ in }) throws -> Int {
         let started = Date()
@@ -131,7 +131,7 @@ public final class Names {
         return touched
     }
 
-    /// Brings one folder's direct children in line with the disk. Returns how many entries changed.
+    /// Syncs one folder's direct children with the disk. Returns the number of changes.
     @discardableResult
     public func reread(_ folder: String) throws -> Int {
         let listed = Dictionary(Self.list(folder).map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
@@ -150,7 +150,7 @@ public final class Names {
                 if e.isDir && !Config.skipDir(path: e.path, name: e.name) { newFolders.append(path) }
             }
             let crowded = listed.count > Config.crowded
-            if let was = known.values.first, was != crowded {       // the folder crossed the dataset line
+            if let was = known.values.first, was != crowded {
                 for row in try db.query("SELECT id, name FROM entries WHERE path > ? AND path < ? AND instr(substr(path, ?), '/') = 0",
                                         [.text(folder + "/"), .text(folder + "0"), .int(Int64(folder.utf8.count + 2))]) {
                     try db.query("UPDATE entries SET crowded = ? WHERE id = ?", [.int(crowded ? 1 : 0), row[0]])
@@ -164,13 +164,13 @@ public final class Names {
                              [.double(Double(st.st_mtimespec.tv_sec) + Double(st.st_mtimespec.tv_nsec) / 1e9), .text(folder)])
             }
         }
-        for folder in newFolders {          // a new folder: everything in it is new
+        for folder in newFolders {
             try db.transaction { try Self.walk(folder) { try insert($0); changes += 1 } }
         }
         return changes
     }
 
-    /// A live change from the file watcher: the path appeared, changed or went away.
+    /// Adds, updates or removes one path.
     public func upsert(_ path: String) throws {
         var st = stat()
         guard lstat(path, &st) == 0 else { return try remove(path) }
@@ -186,7 +186,7 @@ public final class Names {
                          mtime: mtime, size: Int64(st.st_size), crowded: sibling == 1))
     }
 
-    /// The path itself and, if it was a folder, everything under it.
+    /// Removes a path and everything under it.
     public func remove(_ path: String) throws {
         let ids = try db.query("SELECT id FROM entries WHERE path = ? OR (path > ? AND path < ?)",
                                [.text(path), .text(path + "/"), .text(path + "0")]).compactMap { $0[0].int }
@@ -199,7 +199,7 @@ public final class Names {
         }
     }
 
-    /// Paths of documents to read: (modification time, size), leaving out dataset folders.
+    /// Indexable documents outside dataset folders, with mtime and size.
     public func documents() throws -> [String: (mtime: Double, size: Int64)] {
         var out: [String: (mtime: Double, size: Int64)] = [:]
         for row in try db.query("SELECT path, mtime, size FROM entries WHERE is_dir = 0 AND crowded = 0") {
@@ -222,12 +222,12 @@ public final class Names {
                 SELECT e.path, e.name, e.is_dir, e.mtime, e.depth, e.crowded FROM names JOIN entries e ON e.id = names.rowid
                 WHERE names MATCH ? LIMIT 3000
                 """, [.text(match)])) ?? []
-            // Files in dataset folders aren't in the trigram index: they're found by how their name starts.
+            // Dataset files aren't in the trigram index; match them by prefix.
             rows += (try? read.query("""
                 SELECT path, name, is_dir, mtime, depth, crowded FROM entries WHERE name LIKE ? ESCAPE '\\' AND crowded = 1 LIMIT 40
                 """, [.text(prefix)])) ?? []
         } else {
-            // One or two letters: names that start with them.
+            // Too short for trigrams: prefix match.
             rows = (try? read.query("""
                 SELECT path, name, is_dir, mtime, depth, crowded FROM entries WHERE name LIKE ? ESCAPE '\\' AND crowded = 0
                 ORDER BY depth LIMIT 3000
@@ -240,7 +240,7 @@ public final class Names {
         for row in rows {
             guard let path = row[0].text, let name = row[1].text else { continue }
             let low = name.lowercased(), isDir = row[2].int == 1
-            guard words.allSatisfy({ low.contains($0) }), !low.hasSuffix(".app") else { continue }   // apps: the app's own list
+            guard words.allSatisfy({ low.contains($0) }), !low.hasSuffix(".app") else { continue }
             let stem = isDir ? low : (low as NSString).deletingPathExtension
             var score: Double
             if stem == q || low == q { score = 100 }

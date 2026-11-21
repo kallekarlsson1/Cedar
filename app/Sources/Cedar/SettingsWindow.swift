@@ -2,7 +2,7 @@ import AppKit
 import CedarKit
 import ServiceManagement
 
-/// What the settings and welcome windows need from the app.
+/// What the settings and welcome windows need from the app delegate.
 protocol AppControls: AnyObject {
     var engine: EngineClient! { get }
     var shortcutIndex: Int { get }
@@ -11,7 +11,7 @@ protocol AppControls: AnyObject {
 }
 
 enum StatusText {
-    /// "648,177 files · 1,874 documents · understanding 30% · about 2 h left"
+    /// One-line indexing status for the menu and the windows.
     static func line(_ s: EngineClient.Status?) -> String {
         guard let s else { return "Engine not running" }
         let fmt = NumberFormatter()
@@ -38,7 +38,7 @@ enum StatusText {
     }
 }
 
-/// Spotlight's own ⌘Space, as System Settings has it (it's on unless switched off there).
+/// State of Spotlight's own ⌘Space shortcut in System Settings.
 enum SpotlightShortcut {
     static var isOn: Bool {
         let keys = UserDefaults(suiteName: "com.apple.symbolichotkeys")?.dictionary(forKey: "AppleSymbolicHotKeys")
@@ -235,7 +235,7 @@ final class SettingsController: NSObject, NSTableViewDataSource, NSTableViewDele
     }
 }
 
-/// The first-run window: what Cedar is, how to give it ⌘Space, and how the first indexing is going.
+/// First-run window.
 final class WelcomeController: NSObject, NSWindowDelegate {
     private unowned let app: AppControls
     private(set) var window: NSWindow!
@@ -319,6 +319,6 @@ final class WelcomeController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         timer?.invalidate(); timer = nil
         UserDefaults.standard.set(true, forKey: "welcomed")
-        app.setShortcut(app.shortcutIndex)       // register again, in case Spotlight just let go of ⌘ Space
+        app.setShortcut(app.shortcutIndex)
     }
 }

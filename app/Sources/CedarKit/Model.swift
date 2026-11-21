@@ -1,8 +1,8 @@
 import CLlama
 import Foundation
 
-/// Qwen3-Embedding-0.6B (8-bit GGUF) on llama.cpp with Metal, linked into this binary.
-/// One passage at a time, cut at 512 tokens, last-token pooling, normalized: the same vectors the index holds.
+/// Qwen3-Embedding-0.6B (Q8 GGUF) on llama.cpp with Metal.
+/// One text per call, truncated to 512 tokens, last-token pooling, L2-normalized.
 public final class EmbeddingModel {
     public static let dimension = 1024
     public static let maxTokens = 512
@@ -12,10 +12,10 @@ public final class EmbeddingModel {
     private let context: OpaquePointer
     private let vocab: OpaquePointer
     private var batch: llama_batch
-    private let specials: [llama_token]     // what the tokenizer adds around a text (for this model: the end token)
+    private let specials: [llama_token]   // tokens the tokenizer adds around a text
 
     public init(path: String) throws {
-        llama_log_set({ _, _, _ in }, nil)   // quiet
+        llama_log_set({ _, _, _ in }, nil)
         llama_backend_init()
         var mp = llama_model_default_params()
         mp.n_gpu_layers = -1

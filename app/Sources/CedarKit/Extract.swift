@@ -2,11 +2,10 @@ import AppKit
 import Foundation
 import PDFKit
 
-/// A piece of a document. Regions:
-///   head  the top of a document: a paper's title, authors and affiliations (everything before "Abstract")
-///   body  the text, in overlapping passages of about 200 words, each with its page number
-///   refs  a paper's reference list: kept for exact-word search but weighted low and never embedded, so a paper
-///         isn't found by the names it cites
+/// A passage of a document. Regions:
+///  head  title and author block (page 1 up to the abstract)
+///  body  overlapping ~200-word passages, with page numbers
+///  refs  the reference list; keyword-indexed with a low weight, never embedded
 public struct Passage {
     public let region: String
     public let page: Int?
@@ -17,8 +16,8 @@ public struct ReadDocument {
     public var title: String?
     public var pages: Int?
     public var passages: [Passage]
-    public var embed = true          // false: keyword search only (number tables, text copies of PDFs)
-    public var pendingOCR = false    // scanned pages still to be read (waiting for the charger)
+    public var embed = true   // false: keyword search only
+    public var pendingOCR = false   // scanned pages not read yet
 }
 
 public enum Extract {
@@ -44,7 +43,6 @@ public enum Extract {
         case "pdf":
             return size > Config.maxPDFBytes ? nil : pdf(path, allowOCR: allowOCR)
         case "docx", "doc", "rtf", "odt":
-            // macOS reads these itself.
             guard let text = try? NSAttributedString(url: URL(fileURLWithPath: path), options: [:], documentAttributes: nil)
             else { return nil }
             return plain(path, text.string)
@@ -70,13 +68,13 @@ public enum Extract {
         }
         let title = pdfTitle(doc)
 
-        // Scanned pages have no text of their own: Apple's on-device text recognition reads them.
+        // Pages without a text layer go through OCR.
         var pending = false
         let blank = pages.indices.filter { pages[$0].trimmingCharacters(in: .whitespacesAndNewlines).count < 30 }
             .prefix(ocrPageLimit).map { $0 + 1 }
         if !blank.isEmpty && allowOCR {
             if Config.onBattery() {
-                pending = Double(blank.count) > Double(pages.count) * 0.5     // a scan: read when the charger is in
+                pending = Double(blank.count) > Double(pages.count) * 0.5
             } else {
                 for (number, text) in OCR.run(path: path, pages: Array(blank)) {
                     if let n = Int(number), n >= 1, n <= pages.count { pages[n - 1] = text }
@@ -92,7 +90,7 @@ public enum Extract {
         }
         if !head.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { passages.append(Passage(region: "head", page: 1, text: squash(head))) }
 
-        // The reference list starts at the last "References" heading in the second half of the document.
+        // The reference list starts at the last "References" heading in the second half.
         var refsAt: (page: Int, offset: Int)?
         var i = pages.count - 1
         while i >= pages.count / 2 && i >= 0 {
@@ -118,7 +116,7 @@ public enum Extract {
            meta.count > 8, matches(junkTitle, meta).isEmpty {
             return meta.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        // Otherwise the biggest text on page 1, which is the title in nearly every paper.
+        // Fall back to the largest text on page 1.
         guard let text = doc.page(at: 0)?.attributedString, text.length > 0 else { return nil }
         var biggest: CGFloat = 0
         text.enumerateAttribute(.font, in: NSRange(location: 0, length: text.length)) { value, range, _ in
@@ -147,13 +145,13 @@ public enum Extract {
         if !lines.isEmpty {
             let ext = Config.ext(path)
             if ["md", "markdown", "org", "rst"].contains(ext) { title = mdTitle(text) }
-            // A note's own metadata block and title are its head; what it says about other things is body.
+            // For notes, the head is the front matter and title.
             var head = lines.prefix(3).joined(separator: "\n")
             if let block = frontMatter(text) { head = block.whole + "\n" + (title ?? "") }
             passages.append(Passage(region: "head", page: nil, text: String(squash(head).prefix(1500))))
         }
         passages += windows(text).map { Passage(region: "body", page: nil, text: $0) }
-        // A text copy of a PDF ("paper.pdf.txt") is found by its words; its PDF carries the meaning.
+        // "paper.pdf.txt" is a text dump of a PDF: keyword index only.
         let embed = !path.lowercased().hasSuffix(".pdf.txt") && wordy(passages)
         return ReadDocument(title: title, pages: nil, passages: passages, embed: embed)
     }
@@ -166,7 +164,7 @@ public enum Extract {
         return (ns.substring(with: m.range), ns.substring(with: m.range(at: 1)), m.range.location + m.range.length)
     }
 
-    /// A note's title: `title:` in its metadata block, else its first heading. Nil: show the file name.
+    /// Title from front matter `title:`, else the first heading.
     public static func mdTitle(_ text: String) -> String? {
         var body = text
         if let block = frontMatter(text) {
@@ -185,7 +183,7 @@ public enum Extract {
         return nil
     }
 
-    /// Text from PowerPoint and Excel files (zips of XML), through macOS's own unzip.
+    /// Text of a .pptx or .xlsx file, extracted with /usr/bin/unzip.
     static func office(_ path: String, _ ext: String) -> String? {
         let members = ext == "pptx" ? ["ppt/slides/slide*.xml", "ppt/notesSlides/notesSlide*.xml"]
                                     : ["xl/sharedStrings.xml", "xl/worksheets/sheet*.xml"]
@@ -245,7 +243,7 @@ public enum Extract {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Mostly letters, not a table of numbers.
+    /// False for text that is mostly digits (data tables).
     static func wordy(_ passages: [Passage]) -> Bool {
         let sample = passages.prefix(20).map(\.text).joined(separator: " ")
         guard !sample.isEmpty else { return false }

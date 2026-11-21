@@ -1,6 +1,6 @@
 #!/bin/bash
-# The search-quality check: indexes evals/corpus.noindex in a scratch folder and runs evals/queries.json against it.
-# Exits 1 when any kind of query falls below its bar.   Usage: scripts/check.sh [--words-only]
+# Search-quality check: indexes evals/corpus.noindex in a scratch folder and runs evals/queries.json.
+# Exits 1 if any query category falls below its threshold. Usage: scripts/check.sh [--words-only]
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 (cd "$here/app" && swift build -c release -Xswiftc -file-prefix-map -Xswiftc "$here=." -Xswiftc -debug-prefix-map -Xswiftc "$here=." 2>&1 | grep -E "error|warning: unre" || true)

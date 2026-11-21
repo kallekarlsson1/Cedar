@@ -1,14 +1,14 @@
 import Foundation
 
-/// Arithmetic typed into the search field: 24*1.25, (3+4)^2, sqrt(2), 15% of 80, 1,5 * 2 (Swedish decimal comma).
-/// A small parser of its own (NSExpression crashes the app on input it can't parse).
+/// Evaluates arithmetic such as 24*1.25, (3+4)^2, sqrt(2), 15% of 80. Accepts a decimal comma.
+/// Hand-written parser: NSExpression raises on malformed input.
 enum Calculator {
     static func evaluate(_ input: String) -> Double? {
         var text = input.lowercased().trimmingCharacters(in: .whitespaces)
         if text.hasPrefix("=") { text.removeFirst() }
-        // "15% of 80" → 15/100*80
+        // "15% of 80" becomes (15/100)*80
         text = text.replacingOccurrences(of: #"(\d+(?:[.,]\d+)?)\s*%\s*of\s*"#, with: "($1/100)*", options: .regularExpression)
-        // Only math: digits, operators, parentheses and a few function names.
+        // Reject anything that isn't arithmetic.
         guard text.range(of: #"^[0-9\s.,+\-*/×÷^%()a-z]+$"#, options: .regularExpression) != nil else { return nil }
         let hasOperator = text.range(of: #"[+\-*/×÷^%]|sqrt|sin|cos|tan|log|ln|abs|pi"#, options: .regularExpression) != nil
         guard hasOperator, text.range(of: #"\d|pi"#, options: .regularExpression) != nil else { return nil }
@@ -87,7 +87,7 @@ enum Calculator {
                     pos += 1
                     guard let right = power() else { return nil }
                     left = c == "*" ? left * right : left / right
-                } else if case .op("%")? = peek {      // 50% → 0.5
+                } else if case .op("%")? = peek {   // 50% = 0.5
                     pos += 1
                     left /= 100
                 } else if let p = peek, p == .open || { if case .name = p { return true }; return false }() {

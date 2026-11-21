@@ -1,13 +1,13 @@
 import Foundation
 
-/// The running engine (`Cedar --engine`): keeps both indexes current and answers the panel over a private socket.
+/// The engine process (`Cedar --engine`): keeps the indexes current and serves searches on a Unix socket.
 ///
-/// Protocol: one JSON object per line each way.
-///   {"op": "search", "q": "halvorsen plural", "deep": true}   → {"docs": [...], "files": [...], "ms": 12.3}
-///   {"op": "status"}                                      → {"state": ..., "names": 646466, "documents": 1696, ...}
+/// One JSON object per line in each direction:
+///  {"op": "search", "q": "...", "deep": true}  ->  {"docs": [...], "files": [...], "ms": 12.3}
+///  {"op": "status"}                             ->  {"state": ..., "names": ..., "documents": ..., ...}
 public final class Engine {
-    static let idleBeforeEmbedding = 15.0   // seconds after the last search before the GPU goes back to indexing
-    static let idleBeforeUnload = 120.0     // with nothing left to embed, free the model after this long without a search
+    static let idleBeforeEmbedding = 15.0   // seconds idle before indexing resumes
+    static let idleBeforeUnload = 120.0   // seconds idle before the model is unloaded
 
     let names: Names
     let content: ContentIndex
@@ -18,16 +18,16 @@ public final class Engine {
     private var lastSearch = Date.distantPast
     private var changed = Set<String>()
     private let changeSignal = DispatchSemaphore(value: 0)
-    private var work = 0                    // counts up when there may be new passages to embed
-    private var rate = 0.0                  // passages per second, smoothed: for the time estimate
-    private var settingsChanged: Settings?  // the settings before a change the reader still has to apply
+    private var work = 0   // bumped when there may be passages to embed
+    private var rate = 0.0   // passages per second, smoothed
+    private var settingsChanged: Settings?   // previous settings, until the reader applies a change
     private var downloading = false
 
     struct Answer: Codable { let docs: [DocHit]; let files: [FileHit]; let ms: Double }
     struct Status: Codable {
         let state: String; let names: Int; let model: Bool
         let documents: Int; let vectors: Int; let to_embed: Int; let first_pass_left: Int
-        let rate: Double        // passages embedded per second lately (0: not measured yet)
+        let rate: Double
     }
 
     public init() throws {
@@ -54,22 +54,22 @@ public final class Engine {
                 set("listing files")
                 try names.rebuild(log: logLine)
             } else {
-                // Search is already up on the last run's index; find what changed while Cedar wasn't running.
+                // Catch up on changes made while the engine wasn't running.
                 set("checking for changes")
                 try names.catchUp(log: logLine)
-                for path in try content.knownDocuments() { try names.upsert(path) }   // edited in place, or gone
+                for path in try content.knownDocuments() { try names.upsert(path) }
             }
             set("reading documents")
             try syncAll()
             var lastFull = Date()
             set("up to date")
             while true {
-                _ = changeSignal.wait(timeout: .now() + 60)      // sleeps until a file changes
-                Thread.sleep(forTimeInterval: 2)                 // let a burst of changes (a download, a save) finish
+                _ = changeSignal.wait(timeout: .now() + 60)
+                Thread.sleep(forTimeInterval: 2)
                 try applySettings()
                 try applyChanges()
-                if try content.readScans(log: logLine) > 0 { moreWork() }   // scans that waited for the charger
-                if Date().timeIntervalSince(lastFull) > 7 * 24 * 3600 {     // a safety net; changes arrive live
+                if try content.readScans(log: logLine) > 0 { moreWork() }
+                if Date().timeIntervalSince(lastFull) > 7 * 24 * 3600 {
                     try names.rebuild(log: logLine)
                     try syncAll()
                     lastFull = Date()
@@ -81,7 +81,7 @@ public final class Engine {
     }
 
     private func syncAll() throws {
-        // Files that are only in iCloud keep their names searchable; their contents aren't read (no downloads).
+        // Skip iCloud files that aren't downloaded.
         let wanted = try names.documents().filter { !Config.isDataless($0.key) }
         try content.sync(wanted, log: logLine)
         try content.readScans(log: logLine)
@@ -89,7 +89,7 @@ public final class Engine {
         moreWork()
     }
 
-    /// Settings changed: forget what's in newly excluded folders, and list the ones that are searched again.
+    /// Applies a settings change: drops newly excluded folders and re-lists ones no longer excluded.
     private func applySettings() throws {
         lock.lock(); let before = settingsChanged; settingsChanged = nil; lock.unlock()
         guard let before else { return }
@@ -135,7 +135,7 @@ public final class Engine {
         if parts.dropLast().contains(where: { $0.hasSuffix(".noindex") }) { return true }
         if Settings.current.excludes(path) { return true }
         if path.hasPrefix(Config.iCloud + "/") {
-            parts = Array(parts.dropFirst(Config.iCloud.split(separator: "/").count))    // inside ~/Library but wanted
+            parts = Array(parts.dropFirst(Config.iCloud.split(separator: "/").count))
         } else if Config.skipPaths.contains(where: { path == $0 || path.hasPrefix($0 + "/") }) {
             return true
         }
@@ -161,8 +161,7 @@ public final class Engine {
             if Settings.current.paused { Thread.sleep(forTimeInterval: 2); continue }
             let battery = Config.onBattery()
             if !model.loaded {
-                // Unloaded while idle: come back only when there's work it's allowed to do now. The database is
-                // asked only when the reader reported something new or the charger was (un)plugged.
+                // Model unloaded: only query the database again when the reader reported work or the power source changed.
                 lock.lock(); let seen = (work, battery); lock.unlock()
                 if let c = checked, c == seen { Thread.sleep(forTimeInterval: 5); continue }
                 checked = seen
@@ -170,7 +169,7 @@ public final class Engine {
                 if p.first_pass_left > 0 || (p.to_embed > 0 && !battery) { wake() } else { Thread.sleep(forTimeInterval: 5) }
                 continue
             }
-            // On battery only titles and first pages; the long tail waits for the charger.
+            // On battery, embed first pages only.
             let began = Date()
             let done = (try? content.embedSome(model: { [model] in model.document($0) }, limit: 8, firstPassOnly: battery,
                                                pause: { [unowned self] in self.sinceSearch < Self.idleBeforeEmbedding || self.model.searchWaiting })) ?? 0
@@ -199,7 +198,7 @@ public final class Engine {
         var vector: [Float]?
         if deep {
             if !model.loaded {
-                // Back from idle: words answer now; meaning joins once the model is in, for this search if it can.
+                // Model unloaded: start it, and wait briefly so this search can still use it.
                 let ready = DispatchSemaphore(value: 0)
                 DispatchQueue.global(qos: .userInitiated).async { self.wake(); ready.signal() }
                 _ = ready.wait(timeout: .now() + 2.5)
@@ -207,7 +206,7 @@ public final class Engine {
             vector = model.query(q)
         }
         let docs = (try? content.search(q, queryVector: vector)) ?? []
-        // A copy of the same file ("paper (1).pdf") shows once.
+        // Show duplicates of a document once.
         var seen = Set<String>(), unique: [DocHit] = []
         for d in docs {
             let stem = ((d.path as NSString).lastPathComponent as NSString).deletingPathExtension
@@ -258,7 +257,7 @@ public final class Engine {
     // MARK: running
 
     public func run() -> Never {
-        // When the app that started us goes, so do we.
+        // Exit when the parent app exits.
         let parent = getppid()
         let watch = DispatchSource.makeProcessSource(identifier: parent, eventMask: .exit, queue: .global())
         watch.setEventHandler { _exit(0) }
@@ -281,7 +280,7 @@ public final class Engine {
             logLine("the path to Cedar's folder is too long for a socket: \(Config.socket)"); _exit(1)
         }
         withUnsafeMutableBytes(of: &addr.sun_path) { raw in for (i, b) in pathBytes.enumerated() where i < raw.count { raw[i] = UInt8(bitPattern: b) } }
-        let old = umask(0o077)                   // the socket is usable by this user only
+        let old = umask(0o077)   // owner-only socket
         let bound = withUnsafePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } }
         umask(old)
         guard bound == 0, listen(fd, 16) == 0 else { logLine("can't listen on \(Config.socket)"); _exit(1) }
@@ -305,7 +304,7 @@ public final class Engine {
                 }
                 close(client)
             }
-            thread.qualityOfService = .userInitiated      // out of App Nap, on the performance cores
+            thread.qualityOfService = .userInitiated
             thread.start()
         }
     }

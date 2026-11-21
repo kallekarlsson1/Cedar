@@ -1,19 +1,19 @@
 import Foundation
 
-/// The model lives in a helper process (this same binary, run with `--model`), so that stopping it gives its
-/// memory (~450 MB) back to macOS. Searches and indexing take turns on it; a waiting search always goes next.
+/// Runs the model in a helper process (`Cedar --model`), so its memory is released when the helper exits.
+/// Queries take priority over indexing.
 ///
-/// Pipe protocol: request = kind byte ('q' query, 'd' document) + length (UInt32) + UTF-8 text;
-/// reply = count (UInt32: 1024, or 0 when it failed) + that many Float32. The helper writes "R" once it's ready.
+/// Pipe protocol: request = kind byte ('q' or 'd') + UInt32 length + UTF-8 text;
+/// reply = UInt32 count (0 on failure) + that many Float32. The helper writes "R" when ready.
 public final class ModelClient {
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
-    private let lock = NSLock()           // one request on the pipe at a time
+    private let lock = NSLock()   // one request at a time
     private let loadLock = NSLock()
     private var waiting = 0
     private let countLock = NSLock()
-    private var recent: [String: [Float]] = [:]     // query vectors: retyping costs nothing
+    private var recent: [String: [Float]] = [:]   // recent query vectors
     private var recentOrder: [String] = []
 
     public init() {}
@@ -21,7 +21,7 @@ public final class ModelClient {
     public var loaded: Bool { process?.isRunning == true }
     public var searchWaiting: Bool { countLock.lock(); defer { countLock.unlock() }; return waiting > 0 }
 
-    /// True when the model file is on this Mac already (no download needed).
+    /// Whether the model file is already on disk.
     public static var modelIsHere: Bool {
         let fm = FileManager.default
         if fm.fileExists(atPath: Config.modelPath) { return true }
@@ -29,7 +29,7 @@ public final class ModelClient {
         return ((try? fm.contentsOfDirectory(atPath: cache)) ?? []).contains { fm.fileExists(atPath: cache + "/" + $0 + "/" + Config.modelFile) }
     }
 
-    /// Where the model file is: Cedar's own folder, a copy Hugging Face tools already downloaded, or a download now.
+    /// Path to the model file: Cedar's data folder, the Hugging Face cache, or a fresh download.
     public static func modelFile(log: (String) -> Void = { _ in }) -> String? {
         let fm = FileManager.default
         if fm.fileExists(atPath: Config.modelPath) { return Config.modelPath }
@@ -61,7 +61,7 @@ public final class ModelClient {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binary)
         p.arguments = ["--model", file]
-        p.qualityOfService = .userInitiated       // a search waits on it; indexing goes one passage at a time
+        p.qualityOfService = .userInitiated
         let toChild = Pipe(), fromChild = Pipe()
         p.standardInput = toChild
         p.standardOutput = fromChild
@@ -75,12 +75,12 @@ public final class ModelClient {
         log(String(format: "model loaded in %.1fs", Date().timeIntervalSince(started)))
     }
 
-    /// Stops the helper; `load` starts it again in under a second.
+    /// Stops the helper process.
     public func unload(log: (String) -> Void = { _ in }) {
         loadLock.lock(); lock.lock()
         defer { lock.unlock(); loadLock.unlock() }
         guard let p = process else { return }
-        try? input?.close()                      // the helper exits when its input closes
+        try? input?.close()
         DispatchQueue.global().asyncAfter(deadline: .now() + 3) { if p.isRunning { p.terminate() } }
         process = nil; input = nil; output = nil
         log("model unloaded while idle")
@@ -128,7 +128,7 @@ public final class ModelClient {
 
     public func document(_ text: String) -> [Float]? { ask("d", text) }
 
-    /// The helper process's side (`Cedar --model file`).
+    /// Entry point of the helper process.
     public static func serve(modelPath: String) -> Never {
         let stdin = FileHandle.standardInput, stdout = FileHandle.standardOutput
         guard let model = try? EmbeddingModel(path: modelPath), model.embed("warm up") != nil else {
@@ -137,7 +137,7 @@ public final class ModelClient {
         stdout.write(Data("R".utf8))
         while true {
             let head = stdin.readData(ofLength: 5)
-            guard head.count == 5 else { _exit(0) }          // the engine is gone, or asked us to stop
+            guard head.count == 5 else { _exit(0) }
             let length = Int(head.dropFirst().withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) })
             var body = Data()
             while body.count < length {

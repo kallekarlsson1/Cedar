@@ -129,25 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, AppCon
     }
 }
 
-// `Cedar --try "100 usd" "2+2" …` prints what the panel would answer, for testing from a terminal.
-if CommandLine.arguments.count > 2, CommandLine.arguments[1] == "--try" {
-    let data = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Cedar")
-    try? FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
-    let converter = Converter(dataDir: data)
-    let apps = Apps()
-    RunLoop.main.run(until: Date().addingTimeInterval(1.5))   // rates and the app list load
-    for q in CommandLine.arguments.dropFirst(2) {
-        var lines: [String] = []
-        if let v = Calculator.evaluate(q) { lines.append("= " + Calculator.format(v)) }
-        lines += converter.convert(q).map { "\($0.text)  [\($0.note)]" }
-        lines += apps.search(q).prefix(3).map { "app: \($0.0.name) (\(Int($0.1)))" }
-        print("\(q) → " + (lines.isEmpty ? "-" : lines.joined(separator: " | ")))
-    }
-    exit(0)
-}
-
-// `Cedar --search "halvorsen plural"` and `Cedar --status`: ask the running engine from a terminal.
+// `Cedar --search <query>` and `Cedar --status` query the running engine from a terminal.
 if CommandLine.arguments.count > 1, ["--search", "--status"].contains(CommandLine.arguments[1]) {
     let client = EngineClient(dataDir: Config.data)
     var done = false
@@ -171,17 +153,17 @@ if CommandLine.arguments.count > 1, ["--search", "--status"].contains(CommandLin
     exit(0)
 }
 
-// `Cedar --model file`: the helper process that holds the model.
+// `Cedar --model <file>`: the embedding helper process.
 if CommandLine.arguments.count > 2, CommandLine.arguments[1] == "--model" {
     ModelClient.serve(modelPath: CommandLine.arguments[2])
 }
 
-// `Cedar --engine`: the indexes and search, serving the panel over a socket.
+// `Cedar --engine`: the indexing and search process.
 if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "--engine" {
     do { try Engine().run() } catch { logLine("engine failed to start: \(error)"); exit(1) }
 }
 
-// `Cedar --eval corpus queries.json [--words-only]`: the search-quality check on the Swift engine.
+// `Cedar --eval <corpus> <queries.json> [--words-only]`: the search-quality check.
 if CommandLine.arguments.count > 3, CommandLine.arguments[1] == "--eval" {
     let wordsOnly = CommandLine.arguments.contains("--words-only")
     let model = ProcessInfo.processInfo.environment["CEDAR_MODEL"] ?? ModelClient.modelFile()
@@ -191,7 +173,7 @@ if CommandLine.arguments.count > 3, CommandLine.arguments[1] == "--eval" {
     } catch { print("eval failed: \(error)"); fflush(stdout); _exit(2) }
 }
 
-// `Cedar --quant-test`: does searching through 1-bit codes, then scoring the best few exactly, give the same results?
+// `Cedar --quant-test`: compares code-shortlisted search with exhaustive scoring on the local index.
 if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "--quant-test" {
     guard let file = ModelClient.modelFile(), let model = try? EmbeddingModel(path: file) else { print("no model"); exit(1) }
     let db = try! Database(path: Config.contentDB)
@@ -212,7 +194,6 @@ if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "--quant-test" {
         for (r, _) in rows.sorted(by: { $0.1 > $1.1 }) { if !out.contains(docs[r]) { out.append(docs[r]) }; if out.count == 10 { break } }
         return out
     }
-    // General questions: what matters is that both ways of searching agree, on whatever library this Mac has.
     let queries = ["people using several chatbots for math and writing", "does debate help people judge correctly", "assistants that agree too much",
         "learning from wrong examples", "social conformity online", "changing beliefs by talking", "tutoring with more than one tutor",
         "computer vision textbook", "a rental agreement", "meeting notes from last month", "project plan and next steps",
@@ -232,7 +213,7 @@ if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "--quant-test" {
             t = Date()
             let near = Bits.nearest(Bits.code(q), in: codes, rows: n, keep: keep)
             let got = topDocs(near.map { ($0, exact(q, $0)) })
-            // The scale for "stands out" from a sample of 2,000 rows instead of all of them.
+            // Mean and deviation from a sample of about 2,000 rows.
             var sm: Float = 0, ss: Float = 0, sn: Float = 0
             for r in stride(from: 0, to: n, by: max(n / 2000, 1)) { let v = exact(q, r); sm += v; ss += v * v; sn += 1 }
             tFast += Date().timeIntervalSince(t)
@@ -247,7 +228,7 @@ if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "--quant-test" {
         print(String(format: "keep %4d: top hit same %2d/%d, top-10 overlap %.3f, z of best off by %.2f on average, %.1f ms (exact scan in plain Swift %.1f ms)",
                      keep, top1, queries.count, overlap / c, zdiff / c, tFast / c * 1000, tExact / c * 1000))
     }
-    // Speed at a million passages (made-up codes: only the timing means anything).
+    // Scan time at a million passages, on random codes.
     let big = 1_000_000
     var fake = [UInt64](repeating: 0, count: big * Bits.words)
     for i in fake.indices { fake[i] = UInt64.random(in: 0...UInt64.max) }
@@ -258,7 +239,7 @@ if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "--quant-test" {
     fflush(stdout); _exit(0)
 }
 
-// `Cedar --embed-test`: do this binary's vectors match the ones in the index? (And how fast is it.)
+// `Cedar --embed-test`: checks new embeddings against stored vectors and reports throughput.
 if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "--embed-test" {
     let model = Config.modelPath
     let started = Date()
@@ -280,54 +261,10 @@ if CommandLine.arguments.count > 1, CommandLine.arguments[1] == "--embed-test" {
     print(String(format: "%.1f passages/s", Double(rows.count) / Date().timeIntervalSince(t)))
     let q = Date(); for _ in 0..<10 { _ = m.embedQuery("the paper about several chatbots") }
     print(String(format: "query %.1f ms", Date().timeIntervalSince(q) * 100))
-    fflush(stdout); _exit(0)      // skip exit handlers: Metal's teardown asserts while a model is still alive
-}
-
-// `Cedar --ocr file.pdf 1,2,5`: the text of those pages, for the engine (scanned PDFs).
-if CommandLine.arguments.count > 3, CommandLine.arguments[1] == "--ocr" {
-    let pages = CommandLine.arguments[3].split(separator: ",").compactMap { Int($0) }
-    let result = OCR.run(path: CommandLine.arguments[2], pages: pages)
-    if let data = try? JSONSerialization.data(withJSONObject: result) { FileHandle.standardOutput.write(data) }
-    exit(0)
+    fflush(stdout); _exit(0)   // Metal asserts in exit handlers while a model is loaded
 }
 
 let app = NSApplication.shared
-if CommandLine.arguments.count > 3, CommandLine.arguments[1] == "--snapshot-window" {
-    app.setActivationPolicy(.accessory)
-    final class Stand: NSObject, AppControls {
-        var engine: EngineClient! = EngineClient(dataDir: Config.data)
-        var shortcutIndex = 0
-        var shortcutTaken = false
-        func setShortcut(_ index: Int) { shortcutIndex = index }
-    }
-    let stand = Stand()
-    var window: NSWindow
-    var keep: AnyObject
-    if CommandLine.arguments[2] == "settings" { let c = SettingsController(app: stand); c.show(); window = c.window; keep = c }
-    else { let c = WelcomeController(app: stand); c.show(); window = c.window; keep = c }
-    window.contentView?.wantsLayer = true      // the picture has no window behind it: paint the background in
-    window.contentView?.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-    RunLoop.main.run(until: Date().addingTimeInterval(1.5))
-    if let view = window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-        view.cacheDisplay(in: view.bounds, to: rep)
-        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: CommandLine.arguments[3]))
-        print("window", window.frame.size)
-    }
-    _ = keep
-    exit(0)
-}
-if CommandLine.arguments.count > 3, CommandLine.arguments[1] == "--snapshot" {
-    app.setActivationPolicy(.accessory)
-    let data = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Cedar")
-    let engine = EngineClient(dataDir: data)
-    let apps = Apps()
-    RunLoop.main.run(until: Date().addingTimeInterval(0.5))
-    let search = SearchController(engine: engine, apps: apps, converter: Converter(dataDir: data), usage: Usage(dataDir: data))
-    search.debugSnapshot(CommandLine.arguments[2], to: CommandLine.arguments[3],
-                         row: CommandLine.arguments.count > 4 ? Int(CommandLine.arguments[4]) : nil)
-    exit(0)
-}
 let delegate = AppDelegate()
 app.delegate = delegate
 app.setActivationPolicy(.accessory)

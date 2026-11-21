@@ -2,8 +2,8 @@ import AppKit
 import PDFKit
 import Vision
 
-/// Reads the text of scanned PDF pages with Apple's on-device text recognition (Vision). Nothing leaves the Mac.
-/// The engine calls it as `Cedar --ocr file.pdf 1,2,5` and gets {"1": "text of page 1", ...} on stdout.
+/// OCR for PDF pages without a text layer, using Vision (on-device).
+/// Returns recognized text keyed by page number.
 public enum OCR {
     public static func run(path: String, pages: [Int]) -> [String: String] {
         guard let doc = PDFDocument(url: URL(fileURLWithPath: path)) else { return [:] }
@@ -23,7 +23,7 @@ public enum OCR {
         return out
     }
 
-    /// The page as a picture about 2,000 pixels on its long side: enough for small print.
+    /// Renders the page about 2,000 px on its long side.
     private static func render(_ page: PDFPage) -> CGImage? {
         let box = page.bounds(for: .cropBox)
         guard box.width > 0, box.height > 0 else { return nil }

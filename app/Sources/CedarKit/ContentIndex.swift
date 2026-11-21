@@ -17,20 +17,19 @@ public struct Progress: Codable {
     public var documents = 0, vectors = 0, to_embed = 0, first_pass_left = 0
 }
 
-/// The document index: passages in SQLite with a keyword index (FTS5) and a vector each, plus the search over both.
-/// The file format is the one the Python engine wrote, so an existing index carries over.
+/// Document index: passages, an FTS5 keyword index and one vector per passage, with hybrid search over them.
 public final class ContentIndex {
     static let schema = """
     CREATE TABLE IF NOT EXISTS docs(
         id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, mtime REAL, size INTEGER, title TEXT, pages INTEGER,
         embed INTEGER NOT NULL DEFAULT 1,
-        state TEXT NOT NULL                 -- ok | ocr (scanned pages waiting) | unreadable
+        state TEXT NOT NULL                 -- ok | ocr (OCR pending) | unreadable
     );
     CREATE TABLE IF NOT EXISTS chunks(
         id INTEGER PRIMARY KEY, doc INTEGER NOT NULL,
         region TEXT NOT NULL,               -- name | head | body | refs
         page INTEGER, ord INTEGER, text TEXT, first_pass INTEGER NOT NULL DEFAULT 0,
-        vec BLOB                            -- 1024 x float16, normalized; NULL until embedded (or never: name, refs)
+        vec BLOB                            -- 1024 x float16, normalized; NULL if not embedded
     );
     CREATE INDEX IF NOT EXISTS chunks_doc ON chunks(doc);
     CREATE TABLE IF NOT EXISTS shingles(hash INTEGER NOT NULL, doc INTEGER NOT NULL);
@@ -39,28 +38,26 @@ public final class ContentIndex {
     CREATE INDEX IF NOT EXISTS chunks_todo ON chunks(first_pass, doc) WHERE vec IS NULL;
     CREATE INDEX IF NOT EXISTS chunks_twin ON chunks(substr(text, 1, 40)) WHERE vec IS NULL;
     CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
-    -- One bit per dimension of each vector (128 bytes): what search keeps in memory. The vectors stay on disk.
+    -- Sign-bit code of each vector (128 bytes).
     CREATE TABLE IF NOT EXISTS codes(chunk INTEGER PRIMARY KEY, doc INTEGER NOT NULL, bits BLOB NOT NULL);
     CREATE INDEX IF NOT EXISTS codes_doc ON codes(doc);
     CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(name, head, body, refs, d, tokenize='porter unicode61 remove_diacritics 2');
     CREATE VIRTUAL TABLE IF NOT EXISTS docfts USING fts5(name, head, body, refs, tokenize='porter unicode61 remove_diacritics 2');
     """
 
-    /// How much finding a word counts, by where it is. A paper's authors beat the names it cites.
+    /// Weight of a keyword match by region.
     static let fieldWeight: [String: Double] = ["name": 1.0, "head": 1.0, "body": 0.5, "refs": 0.12]
     static let columns = ["name", "head", "body", "refs"]
-    /// A passage is a meaning match when it stands out from the rest for this query (z) AND is close in absolute
-    /// terms (cosine): among thousands of passages something always stands out, even for a nonsense query.
-    /// Measured with this model: real matches have cosine 0.44-0.75, the best passage for a query about nothing in
-    /// the library 0.29-0.38.
+    /// A passage counts as a semantic match only if it stands out for the query (z-score) and is close in
+    /// absolute terms (cosine). The z-score alone isn't enough: in a large index something always stands out.
     static let zGate = 2.0
     static let minCosine: Float = 0.42
     static let wordWeight = 5.0
     static let titleWeight = 3.0
-    /// Ties go to the documents people mean: a paper's PDF before a text dump of it.
+    /// Small prior by file type, used to break ties.
     static let kindPrior: [String: Double] = ["pdf": 0.4, "docx": 0.35, "pptx": 0.35, "xlsx": 0.2, "doc": 0.3, "md": 0.2,
                                               "tex": 0.15, "txt": 0.0, "html": 0.05, "htm": 0.05]
-    /// Words in nearly every document: they cost the most to look up and say nothing about which one is meant.
+    /// English and Swedish stopwords, dropped from the keyword part of a query.
     static let stopwords: Set<String> = Set("""
     a an the and or but if of to in on at by for with from into about as is are was were be been being it its this that
     these those there here what which who whom whose when where why how i me my we our you your he she they them their
@@ -71,13 +68,12 @@ public final class ContentIndex {
     när där hur vad vem vilken vilket vilka också bara efter under över mellan
     """.split(whereSeparator: { $0 == " " || $0.isNewline }).map(String.init))
 
-    let write: Database      // indexing
-    let read: Database       // searching: its own connection, so it never waits for a document being written
+    let write: Database   // indexing
+    let read: Database   // searching
     static let dim = EmbeddingModel.dimension
 
-    // In memory: a 1-bit code per passage (128 bytes) and a small sample of full vectors. A search finds the
-    // closest codes, then scores those few hundred passages exactly from the vectors on disk. Measured on a real
-    // 22,000-passage library over 30 queries: the same top 10 as scoring everything, in 1/16 of the memory.
+    // In memory: a sign-bit code per passage and a small sample of full vectors. A search shortlists by code,
+    // then scores the shortlist exactly from the vectors on disk.
     private var codes: [UInt64] = []
     private var rowChunk: [Int64] = []
     private var rowDoc: [Int64] = []
@@ -92,10 +88,10 @@ public final class ContentIndex {
         write = try Database(path: Config.contentDB)
         try write.execute(Self.schema)
         if try !write.query("PRAGMA table_info(docs)").contains(where: { $0[1].text == "opened" }) {
-            try write.execute("ALTER TABLE docs ADD COLUMN opened REAL")      // when it was last opened from Cedar
+            try write.execute("ALTER TABLE docs ADD COLUMN opened REAL")
         }
         read = try Database(path: Config.contentDB)
-        // Vectors made by another model don't compare: embed again.
+        // Vectors from a different embedding setup can't be compared.
         let named = try write.query("SELECT value FROM meta WHERE key = 'vectors'").first?[0].text
         if let named, named != Config.vectors, !Config.compatible.contains(named) {
             try write.query("UPDATE chunks SET vec = NULL WHERE vec IS NOT NULL")
@@ -108,7 +104,7 @@ public final class ContentIndex {
 
     static func half(_ blob: Data) -> [Float16] { blob.withUnsafeBytes { Array($0.bindMemory(to: Float16.self)) } }
 
-    /// Codes for vectors that don't have one yet (an index from before codes existed).
+    /// Backfills codes for vectors stored before codes existed.
     public func makeMissingCodes() throws {
         let missing = try write.query("""
             SELECT c.id, c.doc, c.vec FROM chunks c WHERE c.vec IS NOT NULL AND c.id NOT IN (SELECT chunk FROM codes)
@@ -144,7 +140,7 @@ public final class ContentIndex {
         vectorsLoaded = true
     }
 
-    /// Frees the in-memory copy; keyword search keeps working.
+    /// Drops the in-memory codes. Keyword search is unaffected.
     public func releaseVectors() {
         vectorLock.lock(); defer { vectorLock.unlock() }
         codes = []; rowChunk = []; rowDoc = []; sample = []
@@ -153,7 +149,7 @@ public final class ContentIndex {
 
     private func append(chunk: Int64, doc: Int64, vector: [Float16], bits: [UInt64]) {
         vectorLock.lock(); defer { vectorLock.unlock() }
-        guard vectorsLoaded else { return }      // they're in the database; the next load brings them
+        guard vectorsLoaded else { return }
         codes.append(contentsOf: bits)
         rowChunk.append(chunk)
         rowDoc.append(doc)
@@ -166,12 +162,11 @@ public final class ContentIndex {
         return s
     }
 
-    /// The passages closest to the query, scored exactly, best first; and the mean and deviation of scores across
-    /// the library (from the sample), which say how far a score stands out.
+    /// Nearest passages with exact scores, best first, plus the mean and deviation of scores over the sample.
     private func closest(_ q: [Float]) -> (hits: [(doc: Int64, chunk: Int64, score: Float)], mean: Float, deviation: Float) {
         vectorLock.lock()
         let n = rowChunk.count
-        let keep = min(n, max(300, min(n / 70, 4000)))     // more candidates as the library grows
+        let keep = min(n, max(300, min(n / 70, 4000)))   // more candidates for larger libraries
         let near = Bits.nearest(Bits.code(q), in: codes, rows: n, keep: keep)
         let picked = near.map { (chunk: rowChunk[$0], doc: rowDoc[$0]) }
         var sum: Float = 0, squares: Float = 0
@@ -204,8 +199,7 @@ public final class ContentIndex {
 
     // MARK: indexing
 
-    /// Brings the index in line with `wanted` (path → modification time, size): reads new and changed documents,
-    /// newest first, and drops the ones that are gone.
+    /// Syncs the index with `wanted`: reads new and changed documents (newest first) and removes missing ones.
     public func sync(_ wanted: [String: (mtime: Double, size: Int64)], log: (String) -> Void = { _ in }) throws {
         var have: [String: (mtime: Double, id: Int64)] = [:]
         for row in try write.query("SELECT id, path, mtime FROM docs") {
@@ -238,7 +232,7 @@ public final class ContentIndex {
                              .text(doc.pendingOCR ? "ocr" : "ok")])
             let id = write.lastInsertID
             let stem = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
-            // The name row also gets the file name split at _ - . so "Halvorsen_et_al_2026" matches "halvorsen".
+            // Also index the file name split at _ - . so "smith_et_al_2020" matches "smith".
             let nameText = stem + (doc.title.map { " — " + $0 } ?? "") + " "
                 + stem.replacingOccurrences(of: #"[_\-.]+"#, with: " ", options: .regularExpression)
             try insert(doc: id, region: "name", page: nil, order: 0, text: nameText, first: false)
@@ -262,7 +256,7 @@ public final class ContentIndex {
         let id = write.lastInsertID
         var values: [SQLValue] = [.null, .null, .null, .null]
         values[Self.columns.firstIndex(of: region)!] = .text(text)
-        // d holds one token naming the passage's document ("x42"), so one document's passages are found directly.
+        // `d` tags the row with its document ("x42") so a query can be limited to one document.
         try write.query("INSERT INTO fts(rowid, name, head, body, refs, d) VALUES(?,?,?,?,?,?)", [.int(id)] + values + [.text("x\(doc)")])
     }
 
@@ -276,7 +270,7 @@ public final class ContentIndex {
             try write.query("DELETE FROM docs WHERE id = ?", [.int(doc)])
         }
         vectorLock.lock()
-        if vectorsLoaded, rowDoc.contains(doc) {       // drop its rows from memory
+        if vectorsLoaded, rowDoc.contains(doc) {
             var keptCodes: [UInt64] = []; keptCodes.reserveCapacity(codes.count)
             var keptChunk: [Int64] = [], keptDoc: [Int64] = []
             for i in rowDoc.indices where rowDoc[i] != doc {
@@ -306,7 +300,7 @@ public final class ContentIndex {
 
     // MARK: copies and scans
 
-    /// Hashes of 4-word runs from the start of a document: finds text files that copy a PDF.
+    /// Stores hashes of 4-word runs from the start of the document, to detect text copies of PDFs.
     private func fingerprint(_ doc: Int64) throws {
         let texts = try write.query("SELECT text FROM chunks WHERE doc = ? AND region IN ('head', 'body') ORDER BY ord LIMIT 8",
                                     [.int(doc)]).compactMap { $0[0].text }
@@ -321,8 +315,8 @@ public final class ContentIndex {
         for h in hashes { try write.query("INSERT INTO shingles(hash, doc) VALUES(?, ?)", [.int(h), .int(doc)]) }
     }
 
-    /// Text and Markdown files that copy a PDF keep their words in keyword search but aren't embedded: the PDF
-    /// carries the meaning. PDFs themselves are never skipped.
+    /// Marks text, Markdown and HTML files that duplicate a PDF so they aren't embedded twice. They stay in the
+    /// keyword index.
     public func markCopies(only path: String? = nil, log: (String) -> Void = { _ in }) throws {
         let p: SQLValue = path.map { .text($0) } ?? .null
         let candidates = try write.query("""
@@ -346,7 +340,7 @@ public final class ContentIndex {
         if copies > 0 { log("\(copies) text copies of PDFs: found by their words, not embedded again") }
     }
 
-    /// Reads again the PDFs whose scanned pages were waiting for the charger.
+    /// Re-reads PDFs whose OCR was deferred.
     @discardableResult
     public func readScans(log: (String) -> Void = { _ in }) throws -> Int {
         guard !Config.onBattery(), !Settings.current.paused else { return 0 }
@@ -358,24 +352,22 @@ public final class ContentIndex {
 
     // MARK: embedding
 
-    /// Beyond its title and first pages, a document is embedded in full only if it's in use: changed, added or
-    /// opened from Cedar within this long. Older ones stay searchable by every word and by the meaning of their
-    /// first pages, and are embedded in full the moment you open one. This is what keeps a library of tens of
-    /// thousands of documents from costing days of GPU time.
+    /// Documents modified or opened within this window are embedded in full. Older ones get only their first
+    /// pages embedded until they are opened.
     public static let deepWindow: Double = 2 * 365 * 86400
 
-    /// SQL condition on chunks c / docs d: this passage should have a vector.
+    /// SQL condition (chunks c, docs d) selecting passages that should be embedded.
     static func wanted(now: Double = Date().timeIntervalSince1970) -> String {
         Settings.current.deepEverything ? "1" : "(c.first_pass = 1 OR max(COALESCE(d.opened, 0), d.mtime) > \(now - deepWindow))"
     }
 
-    /// You opened this document from Cedar: read it in full, soon.
+    /// Records that a document was opened, which queues the rest of it for embedding.
     public func opened(_ path: String) throws {
         try write.query("UPDATE docs SET opened = ? WHERE path = ?", [.double(Date().timeIntervalSince1970), .text(path)])
     }
 
-    /// Embeds the next passages, one at a time: first pages of every document before the rest. Stops early when
-    /// `pause` says someone is searching. Returns how many it did.
+    /// Embeds up to `limit` pending passages, first pages before the rest. Stops when `pause` returns true.
+    /// Returns the number embedded.
     public func embedSome(model: (String) -> [Float]?, limit: Int = 8, firstPassOnly: Bool = false,
                           pause: () -> Bool = { false }) throws -> Int {
         let todo = try write.query("""
@@ -391,7 +383,7 @@ public final class ContentIndex {
             guard let vector = model(text) else { break }
             let half = vector.map { Float16($0) }
             let blob = half.withUnsafeBufferPointer { Data(buffer: $0) }
-            // A document deleted meanwhile keeps no vectors.
+            // The document may have been deleted in the meantime.
             guard try write.query("UPDATE chunks SET vec = ? WHERE id = ? RETURNING id", [.blob(blob), .int(id)]).first != nil
             else { continue }
             let bits = half.withUnsafeBufferPointer { Bits.code($0) }
@@ -399,7 +391,7 @@ public final class ContentIndex {
             try write.query("INSERT OR REPLACE INTO codes(chunk, doc, bits) VALUES(?,?,?)", [.int(id), .int(doc), .blob(bitsBlob)])
             append(chunk: id, doc: doc, vector: half, bits: bits)
             done += 1
-            // Passages with the same text ("paper (1).pdf"): one embedding serves them all.
+            // Identical passages elsewhere share this vector.
             for twin in try write.query("""
                 UPDATE chunks SET vec = ? WHERE vec IS NULL AND substr(text, 1, 40) = substr(?, 1, 40) AND text = ?
                 AND region IN ('head', 'body') AND doc IN (SELECT id FROM docs WHERE embed = 1) RETURNING id, doc
@@ -434,7 +426,7 @@ public final class ContentIndex {
         return re.matches(in: lower, range: NSRange(location: 0, length: ns.length)).map { ns.substring(with: $0.range) }
     }
 
-    /// `queryVector`: the query embedded, for the meaning part; nil searches by words only.
+    /// Hybrid search. With a nil `queryVector` only keywords are used.
     public func search(_ query: String, queryVector: [Float]? = nil, limit: Int = 15) throws -> [DocHit] {
         let every = Self.tokens(query)
         var terms = every.filter { !Self.stopwords.contains($0) }
@@ -444,7 +436,7 @@ public final class ContentIndex {
         let db = read
         let total = Double(max(try db.query("SELECT COUNT(*) FROM docs").first?[0].int ?? 1, 1))
 
-        // Words: where in each document each word is found, weighted by how rare the word is.
+        // Keywords: per term, the best-weighted region each document has it in; terms weighted by rarity.
         var patterns: [String] = [], weights: [Double] = []
         var found: [Int64: [Double]] = [:]
         for (t, term) in terms.enumerated() {
@@ -471,13 +463,13 @@ public final class ContentIndex {
         var words: [Int64: Double] = [:]
         for (doc, ws) in found { words[doc] = zip(weights, ws).map(*).reduce(0, +) / weightSum }
 
-        // Meaning: every passage scored, put on this query's scale, best passage per document.
+        // Semantic: best passage per document.
         var meaning: [Int64: (z: Double, chunk: Int64)] = [:]
         if let q = queryVector, q.count == Self.dim, vectorsLoaded, rows >= 8 {
             let (hits, mean, deviation) = closest(q)
             let scale = max(deviation, 0.02)
             for hit in hits.prefix(400) {
-                if hit.score < Self.minCosine { break }     // sorted by score: nothing after this is close enough
+                if hit.score < Self.minCosine { break }
                 if meaning[hit.doc] == nil { meaning[hit.doc] = (Double((hit.score - mean) / scale), hit.chunk) }
             }
         }
@@ -497,8 +489,8 @@ public final class ContentIndex {
             let d = row[0].int ?? 0, path = row[2].text ?? "", ext = Config.ext(path)
             info[d] = (path, row[1].text, row[4].int.map { Int($0) })
             kinds[d] = Self.kindPrior[ext] ?? 0
-            if row[3].int == 0, ["txt", "md", "html", "htm"].contains(ext) { kinds[d]! -= 1.0 }   // a text copy of a PDF
-            // Your words in the title, the file name or the author line: the strongest sign it's the one you mean.
+            if row[3].int == 0, ["txt", "md", "html", "htm"].contains(ext) { kinds[d]! -= 1.0 }
+            // Fraction of query terms found in the title, file name or head.
             let stem = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
             let name = Self.tokens([row[1].text ?? "", stem, heads[d] ?? ""].joined(separator: " "))
             let nameSet = Set(name)
@@ -511,7 +503,6 @@ public final class ContentIndex {
         var scored: [(score: Double, doc: Int64)] = []
         for d in candidates {
             let z = meaning[d]?.z ?? 0, w = words[d] ?? 0
-            // Meaning counts only where a passage stands out; a near-miss adds nothing.
             let meant = z >= Self.zGate ? z : 0
             scored.append((meant + Self.wordWeight * pow(w, 1.5) + Self.titleWeight * pow(titled[d] ?? 0, 2)
                            + (strength[d] ?? 0) + (kinds[d] ?? 0), d))
@@ -546,7 +537,7 @@ public final class ContentIndex {
         return out
     }
 
-    /// True when the word occurs as written somewhere (else it's matched as the start of longer words).
+    /// Whether the term occurs in the index as written. If not, it is matched as a prefix.
     private func indexed(_ term: String) -> Bool {
         ((try? read.query("SELECT 1 FROM fts WHERE fts MATCH ? LIMIT 1", [.text("\"" + term + "\"")])) ?? []).first != nil
     }

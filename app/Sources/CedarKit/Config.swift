@@ -1,10 +1,10 @@
 import Foundation
 
-/// Where Cedar looks, what it skips, and where it keeps its index.
+/// Paths, limits and skip rules.
 public enum Config {
     public static let home = URL(fileURLWithPath: NSHomeDirectory())
 
-    /// CEDAR_DATA and CEDAR_ROOTS point a test run at its own index and folders.
+    /// CEDAR_DATA and CEDAR_ROOTS override the index location and the roots (used by tests).
     public static var data: URL = {
         if let custom = ProcessInfo.processInfo.environment["CEDAR_DATA"] { return URL(fileURLWithPath: custom) }
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Cedar")
@@ -17,14 +17,14 @@ public enum Config {
     public static let modelRepo = "Qwen/Qwen3-Embedding-0.6B-GGUF"
     public static let modelFile = "Qwen3-Embedding-0.6B-Q8_0.gguf"
     public static var modelPath: String { data.appendingPathComponent(modelFile).path }
-    /// Names the vectors in the index; when it changes, every passage is embedded again. `compatible` lists earlier
-    /// names whose vectors are the same within rounding, so those indexes are kept.
+    /// Identifies the embedding setup that produced the stored vectors. If it changes, everything is re-embedded,
+    /// unless the old value is in `compatible`.
     public static let vectors = "Qwen3-Embedding-0.6B | 512 tokens | v1"
     public static let compatible: Set<String> = ["Qwen/Qwen3-Embedding-0.6B | sentence-transformers fp16 | v1"]
 
     public static let iCloud = home.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs").path
 
-    /// Everything a person would look for: the home folder, apps, iCloud Drive and plugged-in drives.
+    /// Home folder, /Applications, iCloud Drive and mounted volumes.
     public static func roots() -> [String] {
         if let custom = ProcessInfo.processInfo.environment["CEDAR_ROOTS"] { return custom.split(separator: ":").map(String.init) }
         var out = [home.path, "/Applications"]
@@ -33,12 +33,12 @@ public enum Config {
         for volume in (try? FileManager.default.contentsOfDirectory(atPath: "/Volumes")) ?? [] {
             let path = "/Volumes/" + volume
             let values = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.isSymbolicLinkKey, .isVolumeKey])
-            if values?.isSymbolicLink == false, values?.isVolume == true { out.append(path) }   // the startup disk is a link
+            if values?.isSymbolicLink == false, values?.isVolume == true { out.append(path) }   // the startup disk appears here as a symlink
         }
         return out
     }
 
-    /// Folders whose contents are never listed: app internals, caches, version control, package managers.
+    /// Never descended into.
     public static let skipPaths: Set<String> = [home.path + "/Library", home.path + "/.Trash"]
     public static let skipNames: Set<String> = [
         "node_modules", ".git", ".hg", ".svn", ".venv", "venv", "env", "__pycache__", "site-packages", ".tox",
@@ -46,16 +46,16 @@ public enum Config {
         "Pods", "target", ".next", ".nuxt", "dist-packages", ".ipynb_checkpoints", "System Volume Information",
         "$RECYCLE.BIN", ".Spotlight-V100", ".fseventsd", ".DocumentRevisions-V100",
     ]
-    /// Bundles that macOS shows as one file: listed by name, never opened up.
+    /// Package extensions: listed as a single item.
     public static let packages: Set<String> = [
         "app", "bundle", "framework", "photoslibrary", "musiclibrary", "tvlibrary", "pkg", "mpkg", "xcodeproj",
         "xcworkspace", "playground", "kext", "plugin", "appex", "imovielibrary", "pages", "numbers", "key", "rtfd",
         "fcpbundle", "logicx", "band", "sparsebundle",
     ]
-    /// A folder holding more entries than this directly is treated as a dataset.
+    /// Folders with more direct entries than this are treated as datasets.
     public static let crowded = 500
 
-    /// Documents whose text is read.
+    /// File types whose contents are indexed.
     public static let docExtensions: Set<String> = [
         "pdf", "md", "markdown", "txt", "tex", "html", "htm", "docx", "pptx", "xlsx", "rtf", "doc", "odt", "rst", "org",
     ]
@@ -67,14 +67,13 @@ public enum Config {
     public static func ext(_ path: String) -> String { (path as NSString).pathExtension.lowercased() }
 
     public static func skipDir(path: String, name: String) -> Bool {
-        // (".noindex" folders are skipped by macOS convention: Spotlight leaves them alone too.)
         name.hasPrefix(".") || name.hasSuffix(".noindex") || skipNames.contains(name) || skipPaths.contains(path)
             || packages.contains(ext(name))
             || Settings.current.excluded.contains(path)
     }
 
-    /// True for a file that's only in iCloud (not downloaded). Its name is searchable; its contents are never read,
-    /// because reading would make macOS download it.
+    /// True for an iCloud file that isn't downloaded. Reading it would trigger a download, so only its name
+    /// is indexed.
     public static func isDataless(_ path: String) -> Bool {
         var st = stat()
         guard lstat(path, &st) == 0 else { return false }
@@ -84,8 +83,8 @@ public enum Config {
     private static var power: (checked: Date, battery: Bool) = (.distantPast, false)
     private static let powerLock = NSLock()
 
-    /// True when the Mac runs on battery (checked once a minute). Heavy work waits for the charger.
-    public static var ignoreBattery = false      // the quality check reads scans whatever the power source
+    /// Cached for a minute.
+    public static var ignoreBattery = false
 
     public static func onBattery() -> Bool {
         if ignoreBattery { return false }
@@ -109,7 +108,7 @@ public enum Config {
     }
 }
 
-/// A line in the engine's log file.
+/// Appends a line to the engine log.
 public func logLine(_ text: String) {
     let format = DateFormatter()
     format.dateFormat = "yyyy-MM-dd HH:mm:ss"

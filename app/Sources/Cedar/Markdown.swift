@@ -1,7 +1,7 @@
 import AppKit
 
-/// Turns a Markdown note into formatted text for the reader: headings, emphasis, lists, quotes, code, links and
-/// Obsidian's [[wiki links]]. The properties block at the top (between --- lines) becomes a small gray header.
+/// Renders Markdown to an attributed string: headings, emphasis, lists, quotes, code, tables, links and
+/// [[wiki links]]. Front matter is shown as a small header.
 enum Markdown {
     static let body = NSFont.systemFont(ofSize: 14)
     static let mono = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)
@@ -10,7 +10,7 @@ enum Markdown {
         let out = NSMutableAttributedString()
         var lines = source.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
 
-        // Properties (YAML front matter).
+        // Front matter.
         if lines.first?.trimmingCharacters(in: .whitespaces) == "---",
            let end = lines.dropFirst().firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "---" }) {
             let block = lines[1..<end].filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -49,20 +49,20 @@ enum Markdown {
                                   style: paragraph(spacing: 6, before: level <= 2 ? 10 : 6)))
                 continue
             }
-            // A rule.
+            // Horizontal rule.
             if trimmed.range(of: #"^(-{3,}|\*{3,}|_{3,})$"#, options: .regularExpression) != nil {
                 out.append(NSAttributedString(string: "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n", attributes: [
                     .font: body, .foregroundColor: NSColor.tertiaryLabelColor, .paragraphStyle: paragraph(spacing: 6)]))
                 continue
             }
-            // Quotes (and Obsidian callouts).
+            // Block quotes and callouts.
             if trimmed.hasPrefix(">") {
                 var text = String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces)
                 text = text.replacingOccurrences(of: #"^\[!(\w+)\][+-]?\s*"#, with: "$1: ", options: .regularExpression)
                 out.append(inline(text, font: body, color: .secondaryLabelColor, style: paragraph(spacing: 3, indent: 16)))
                 continue
             }
-            // Lists and checkboxes; nesting follows the indentation.
+            // Lists and checkboxes, nested by indentation.
             if let m = line.range(of: #"^(\s*)([-*+]|\d+[.)])\s+(\[[ xX]\]\s+)?"#, options: .regularExpression) {
                 let lead = line[m]
                 let depth = CGFloat(lead.prefix { $0 == " " || $0 == "\t" }.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) } / 2)
@@ -75,14 +75,14 @@ enum Markdown {
                 out.append(inline(bullet + "\t" + String(line[m.upperBound...]), font: body, style: style))
                 continue
             }
-            // Tables: columns lined up in a fixed-width font.
+            // Tables, aligned in a monospaced font.
             if trimmed.hasPrefix("|") {
                 var rows: [[String]] = []
                 var j = i - 1
                 while j < lines.count, lines[j].trimmingCharacters(in: .whitespaces).hasPrefix("|") {
                     let row = lines[j].trimmingCharacters(in: .whitespaces)
                     j += 1
-                    if row.range(of: #"^\|[\s:|-]+\|?$"#, options: .regularExpression) != nil { continue }   // the divider row
+                    if row.range(of: #"^\|[\s:|-]+\|?$"#, options: .regularExpression) != nil { continue }   // divider row
                     var cells = row.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
                     if cells.first == "" { cells.removeFirst() }
                     if cells.last == "" { cells.removeLast() }
@@ -91,7 +91,7 @@ enum Markdown {
                 i = j
                 let columns = rows.map(\.count).max() ?? 0
                 let widths = (0..<columns).map { c in min(rows.map { c < $0.count ? $0[c].count : 0 }.max() ?? 0, 26) }
-                // A long last cell wraps under its own column, not back to the left edge.
+                // Hanging indent so a long last cell wraps under its own column.
                 let tableFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
                 let charWidth = ("0" as NSString).size(withAttributes: [.font: tableFont]).width
                 let lastStart = CGFloat(widths.dropLast().reduce(0, +) + 3 * max(columns - 1, 0)) * charWidth
@@ -106,7 +106,7 @@ enum Markdown {
                 }
                 continue
             }
-            // A paragraph: lines up to the next blank line or block run together.
+            // Paragraph: join lines up to the next blank line or block.
             var text = trimmed
             while i < lines.count {
                 let next = lines[i].trimmingCharacters(in: .whitespaces)
@@ -117,7 +117,7 @@ enum Markdown {
             out.append(inline(text, font: body, style: paragraph(spacing: 8)))
         }
 
-        // The words you searched for.
+        // Highlight the query words.
         let plain = out.string as NSString
         for word in words where word.count >= 3 {
             var range = NSRange(location: 0, length: plain.length)
@@ -142,10 +142,10 @@ enum Markdown {
         return p
     }
 
-    /// One block's text with its inline marks applied: **bold**, *italic*, `code`, [links](url), [[wiki links]].
+    /// Applies inline markup to one block.
     private static func inline(_ raw: String, font: NSFont, color: NSColor = .labelColor, style: NSParagraphStyle) -> NSAttributedString {
         var text = raw
-        // Obsidian: [[page|shown]] → shown, [[page]] → page; ![[embed]] → its name; ==mark== → the text.
+        // [[page|label]] becomes label, [[page]] becomes page, ==mark== loses its markers.
         text = text.replacingOccurrences(of: #"!?\[\[([^\]|]*\|)?([^\]]+)\]\]"#, with: "⟦$2⟧", options: .regularExpression)
         text = text.replacingOccurrences(of: "==", with: "")
         let result = NSMutableAttributedString()
@@ -155,7 +155,7 @@ enum Markdown {
             result.append(NSAttributedString(string: text))
         }
         let all = NSRange(location: 0, length: result.length)
-        // Markdown parsing leaves "intents" (bold, italic, code): turn them into fonts.
+        // Convert presentation intents to fonts.
         result.enumerateAttribute(.inlinePresentationIntent, in: all) { value, range, _ in
             var f = font
             var extra: [NSAttributedString.Key: Any] = [:]
@@ -175,7 +175,7 @@ enum Markdown {
         result.enumerateAttribute(.link, in: all) { value, range, _ in
             if value != nil { result.addAttributes([.foregroundColor: NSColor.linkColor], range: range) }
         }
-        // Wiki links, in the accent color without their brackets.
+        // Color wiki links and drop the brackets.
         let s = result.string as NSString
         let re = try! NSRegularExpression(pattern: "⟦([^⟧]+)⟧")
         for m in re.matches(in: result.string, range: NSRange(location: 0, length: s.length)).reversed() {

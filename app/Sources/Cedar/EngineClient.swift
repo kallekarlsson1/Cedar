@@ -1,6 +1,6 @@
 import Foundation
 
-/// Talks to the engine (this binary run with `--engine`) over its private socket, and starts it when it isn't running.
+/// Client for the engine process. Starts the engine if it isn't running.
 final class EngineClient {
     struct Doc: Decodable {
         let path: String
@@ -38,7 +38,7 @@ final class EngineClient {
 
     func startIfNeeded() {
         queue.async {
-            if (try? self.request(["op": "status"], timeout: 1)) != nil { return }   // already running
+            if (try? self.request(["op": "status"], timeout: 1)) != nil { return }
             DispatchQueue.main.async { self.launch() }
         }
     }
@@ -46,15 +46,14 @@ final class EngineClient {
     private func launch() {
         guard let binary = Bundle.main.executablePath else { return }
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: binary)      // the engine is this same binary, in another mode
+        p.executableURL = URL(fileURLWithPath: binary)
         p.arguments = ["--engine"]
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
-        // Searches wait on this process: keep it out of App Nap and off the efficiency cores.
         p.qualityOfService = .userInitiated
         p.terminationHandler = { [weak self] proc in
             guard let self, proc.terminationReason != .uncaughtSignal || proc.terminationStatus != SIGTERM else { return }
-            // Came down on its own: start it again, but don't loop on a broken install.
+            // Restart after a crash, a limited number of times.
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                 guard self.process === proc, self.restarts < 5 else { return }
                 self.restarts += 1
@@ -85,12 +84,12 @@ final class EngineClient {
         }
     }
 
-    /// Settings changed: the engine reads them again.
+    /// Asks the engine to re-read the settings file.
     func reload() {
         queue.async { _ = try? self.request(["op": "reload"], timeout: 2) }
     }
 
-    /// Throws the index away and starts the engine again from nothing.
+    /// Deletes the index and restarts the engine.
     func rebuild() {
         stop()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
@@ -103,7 +102,7 @@ final class EngineClient {
         }
     }
 
-    /// Tells the engine a document was opened, so it's read in full if it wasn't.
+    /// Reports that a document was opened.
     func opened(_ path: String) {
         queue.async { _ = try? self.request(["op": "opened", "path": path], timeout: 2) }
     }
@@ -118,7 +117,7 @@ final class EngineClient {
 
     enum Failure: Error { case connect, send, receive }
 
-    /// One request per connection: connecting to a local socket costs microseconds.
+    /// Sends one request on a new connection and returns the reply line.
     private func request(_ body: [String: Any], timeout: Double) throws -> Data {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw Failure.connect }

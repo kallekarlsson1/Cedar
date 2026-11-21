@@ -1,8 +1,7 @@
 import Foundation
 
-/// "100 usd", "$100 to eur", "500 kr in usd", "5 km in miles", "20 c to f".
-/// Exchange rates are the European Central Bank's daily reference rates (via frankfurter.dev): downloaded at most a few
-/// times a day, kept on disk, and never sent anything about what you type.
+/// Currency and unit conversions: "100 usd", "$100 to eur", "5 km in miles", "20 c to f".
+/// Exchange rates are ECB reference rates from frankfurter.dev, refreshed a few times a day and cached on disk.
 final class Converter {
     struct Result { let text: String; let result: String; let copy: String; let note: String }
 
@@ -30,7 +29,7 @@ final class Converter {
         ratesDate = file.date
     }
 
-    /// Settings: whether Cedar may fetch the day's exchange rates (on unless switched off).
+    /// Whether fetching exchange rates is allowed (default: yes).
     static var ratesAllowed: Bool {
         get { UserDefaults.standard.object(forKey: "rates") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "rates") }
@@ -125,7 +124,7 @@ final class Converter {
         return u
     }()
 
-    /// What a unit converts to when no target is typed.
+    /// Default target unit when none is given.
     private static let defaultTarget: [Unit: Unit] = [
         UnitLength.kilometers: UnitLength.miles, UnitLength.miles: UnitLength.kilometers,
         UnitLength.meters: UnitLength.feet, UnitLength.feet: UnitLength.meters,
@@ -157,12 +156,12 @@ final class Converter {
         UnitEnergy.kilowattHours: UnitEnergy.kilojoules,
     ]
 
-    /// amount, from, optional to. "$100 to eur", "100 usd in sek", "5km", "100 kr", "20 c to f".
+    /// Amount, source unit and optional target.
     private static let pattern = try! NSRegularExpression(
         pattern: #"^\s*([$€£¥₹₩])?\s*(\d[\d\s]*(?:[.,]\d+)?)\s*([^\d\s][^\s]*?)?\s*(?:(?:to|in|i|till|=|->|→)\s+([^\s]+))?\s*$"#,
         options: .caseInsensitive)
 
-    /// "kr" and "kronor" mean the krona or krone of the Mac's own region; Swedish kronor elsewhere.
+    /// "kr" means the local krona or krone in the Nordic countries, SEK elsewhere.
     private var localKrona: String { ["SEK", "NOK", "DKK", "ISK"].contains(home) ? home : "SEK" }
 
     func convert(_ input: String) -> [Result] {
@@ -178,7 +177,7 @@ final class Converter {
         guard let fromWord, !fromWord.isEmpty else { return [] }
         let toWord = group(4)
 
-        // Currency (a target unit of mass turns "pounds" into weight).
+        // Currency. "pounds" with a mass target is weight, handled below.
         func currency(_ word: String) -> String? {
             ["kr", "kronor", "krona", "kroner", "krone"].contains(word) ? localKrona : Self.currencyNames[word]
         }

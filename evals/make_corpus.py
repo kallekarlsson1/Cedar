@@ -1,9 +1,7 @@
-"""Writes a small made-up library to test search on: papers with author blocks and reference lists, notes, a
-duplicate, a text copy of a PDF and a scanned (image-only) PDF. Every name, title and finding in it is invented; any resemblance to real people or papers is accidental.
+"""Generates the test library in evals/corpus.noindex: papers with author blocks and reference lists, notes,
+a duplicate, a text copy of a PDF and an image-only PDF. All names, titles and findings are invented.
 
     uvx --with pymupdf python evals/make_corpus.py evals/corpus.noindex
-
-The result is checked in as evals/corpus.noindex, so this is only needed to change the library.
 """
 
 import sys
@@ -11,7 +9,7 @@ from pathlib import Path
 
 import pymupdf
 
-# (file name, title, authors, year, what it is about)
+# (file name, title, authors, year, abstract)
 PAPERS = [
     ("halvorsen_plural.pdf", "Human Reasoning under Plural Assistant Support", ["Mira Halvorsen", "Tobias Renner"], 2026,
      "We study how people solve mathematics problems and write essays when several language models help them at "
@@ -46,7 +44,7 @@ PAPERS = [
      "Students who napped after studying foreign words remembered more a week later. Time spent in deep sleep "
      "predicted the benefit; total nap length did not."),
 ]
-# Every paper cites Halvorsen: the name is in every reference list but in two author blocks.
+# Every paper cites Halvorsen, who is an author of only two.
 CITES = ["Halvorsen, M., & Renner, T. (2026). Human reasoning under plural assistant support. Proceedings of the Made-Up Conference.",
          "Brennan, A. (2017). Slow-wave sleep and vocabulary retention. Journal of Sleep Research.",
          "Marsh, L. (2023). Adversarial debate helps judges find the truth. Invented Preprints."]
@@ -74,7 +72,7 @@ def paper(path: Path, title: str, authors: list[str], year: int, about: str, sca
     page2 = doc.new_page()
     page2.insert_textbox(pymupdf.Rect(60, 60, 535, 400), "2 Results\n" + " ".join([about] * 3), fontsize=10)
     page2.insert_textbox(pymupdf.Rect(60, 420, 535, 780), "References\n" + "\n".join(CITES), fontsize=9)
-    if scanned:   # the same pages as pictures: no text layer, as from a scanner
+    if scanned:   # rasterize the pages so there is no text layer
         flat = pymupdf.open()
         for p in doc:
             pix = p.get_pixmap(dpi=150)
@@ -88,7 +86,7 @@ def main(out: Path):
     (out / "notes").mkdir(exist_ok=True)
     for name, title, authors, year, about in PAPERS:
         paper(out / "papers" / name, title, authors, year, about)
-    # Traps: a second copy, a text dump of a PDF, and a scan.
+    # A duplicate, a text copy and a scan.
     paper(out / "papers" / "halvorsen_plural (1).pdf", *PAPERS[0][1:])
     (out / "notes" / "halvorsen_plural.txt").write_text(PAPERS[0][1] + "\n" + "\n".join(PAPERS[0][2]) + "\n" + " ".join([PAPERS[0][4]] * 6))
     paper(out / "papers" / "scan_0042.pdf", "Tidal Mills of the Brittany Coast", ["Yann Le Goff"], 1998,

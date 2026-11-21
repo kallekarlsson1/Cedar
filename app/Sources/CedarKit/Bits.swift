@@ -1,7 +1,7 @@
 import Foundation
 
-/// One bit per dimension (is the value positive?): 128 bytes per passage instead of 2,048. Close vectors agree on
-/// most bits, so counting differing bits finds the likely matches fast; those few are then scored exactly.
+/// Sign-bit codes for vectors: one bit per dimension, 128 bytes per passage. Hamming distance on the codes
+/// picks candidates, which are then scored exactly.
 public enum Bits {
     public static let words = EmbeddingModel.dimension / 64
 
@@ -17,7 +17,7 @@ public enum Bits {
         return out
     }
 
-    /// The `keep` rows whose codes differ least from the query's.
+    /// Indices of the `keep` rows nearest to the query by Hamming distance.
     public static func nearest(_ query: [UInt64], in codes: [UInt64], rows: Int, keep: Int) -> [Int] {
         var distance = [UInt16](repeating: 0, count: rows)
         codes.withUnsafeBufferPointer { c in
@@ -33,7 +33,7 @@ public enum Bits {
                 }
             }
         }
-        // Counting sort over the 0...1024 possible distances: no full sort of a million rows.
+        // Distances are 0...1024, so a counting pass finds the cutoff without sorting.
         var counts = [Int](repeating: 0, count: EmbeddingModel.dimension + 2)
         for d in distance { counts[Int(d)] += 1 }
         var cutoff = 0, taken = 0

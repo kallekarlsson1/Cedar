@@ -1,11 +1,10 @@
 import Foundation
 
-/// What the person chose in Settings. Kept as a small JSON file next to the index, so the panel and the engine
-/// (separate processes) both read it; the panel tells the engine to read it again after a change.
+/// User settings, stored as JSON next to the index so the app and the engine can both read them.
 public struct Settings: Codable, Equatable {
-    public var excluded: [String] = []        // folders Cedar doesn't list or read
-    public var paused = false                 // no embedding or text recognition for now (searching still works)
-    public var deepEverything = false         // embed older documents in full too, not only ones in use
+    public var excluded: [String] = []   // folders to skip
+    public var paused = false   // no embedding or OCR
+    public var deepEverything = false   // embed old documents in full too
 
     public init() {}
 
@@ -30,7 +29,7 @@ public struct Settings: Codable, Equatable {
         try? encoder.encode(self).write(to: Self.url, options: .atomic)
     }
 
-    /// The one in force in this process.
+    /// Settings in effect in this process.
     private static var live = Settings.load()
     private static let lock = NSLock()
     public static var current: Settings {

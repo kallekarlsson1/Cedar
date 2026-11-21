@@ -1,7 +1,7 @@
 import CoreServices
 import Foundation
 
-/// Tells the engine which paths changed, as macOS reports them (FSEvents), a couple of seconds after they settle.
+/// FSEvents stream reporting changed paths.
 public final class Watcher {
     private var stream: FSEventStreamRef?
     private let queue = DispatchQueue(label: "cedar.watcher", qos: .utility)

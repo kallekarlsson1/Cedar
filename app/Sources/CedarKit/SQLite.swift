@@ -13,8 +13,7 @@ public enum SQLValue {
 
 public struct SQLError: Error, CustomStringConvertible { public let description: String }
 
-/// One connection to a SQLite file (WAL). Calls are serialized by a lock, so a connection can be shared; indexing
-/// and searching each get their own connection so neither waits for the other.
+/// A SQLite connection in WAL mode. Calls are serialized by a lock.
 public final class Database {
     private var handle: OpaquePointer?
     private let lock = NSRecursiveLock()
@@ -31,7 +30,7 @@ public final class Database {
 
     private var message: String { String(cString: sqlite3_errmsg(handle)) }
 
-    /// Runs statements that return nothing (schema, pragmas).
+    /// Runs statements that return no rows.
     public func execute(_ sql: String) throws {
         lock.lock(); defer { lock.unlock() }
         guard sqlite3_exec(handle, sql, nil, nil, nil) == SQLITE_OK else { throw SQLError(description: message) }
@@ -81,7 +80,7 @@ public final class Database {
     public var lastInsertID: Int64 { sqlite3_last_insert_rowid(handle) }
     public var changes: Int { Int(sqlite3_changes(handle)) }
 
-    /// Everything in `body` commits together, or not at all.
+    /// Runs `body` in a transaction.
     public func transaction<T>(_ body: () throws -> T) throws -> T {
         lock.lock(); defer { lock.unlock() }
         try execute("BEGIN IMMEDIATE")

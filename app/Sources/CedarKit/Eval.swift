@@ -1,11 +1,11 @@
 import Foundation
 
-/// Builds an index of a folder of test documents and checks that searches find what they should
-/// (`Cedar --eval corpus-folder queries.json [--words-only]`, with CEDAR_DATA pointing at a scratch folder).
+/// Indexes a folder of test documents and checks queries against their expected files.
+/// Run as `Cedar --eval <corpus> <queries.json> [--words-only]` with CEDAR_DATA set to a scratch folder.
 public enum Eval {
     struct Query: Decodable { let q: String; let expect: [String]; let tag: String }
 
-    /// Share of queries whose expected file must come first / in the first three.
+    /// Required share of queries with the expected file first, and in the top three.
     static let bars: [String: (Double, Double)] = [
         "author": (0.8, 1.0), "title": (1.0, 1.0), "typing": (1.0, 1.0), "exact": (1.0, 1.0), "words": (1.0, 1.0),
         "scan": (1.0, 1.0), "meaning": (0.8, 0.9), "nothing": (1.0, 1.0),

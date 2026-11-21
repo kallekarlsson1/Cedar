@@ -1,11 +1,11 @@
 import Carbon
 import AppKit
 
-/// A system-wide keyboard shortcut (Carbon's RegisterEventHotKey: no Accessibility permission needed).
+/// Global hotkey through Carbon's RegisterEventHotKey, which needs no Accessibility permission.
 final class Hotkey {
     struct Combo: Equatable {
         var keyCode: UInt32
-        var modifiers: UInt32     // Carbon modifier flags (cmdKey, optionKey, controlKey, shiftKey)
+        var modifiers: UInt32   // Carbon modifier flags
         var label: String
     }
 
@@ -33,7 +33,7 @@ final class Hotkey {
         }, 1, &spec, me, &handlerRef)
     }
 
-    /// Returns false when the system refused the shortcut (another app holds it).
+    /// Returns false if the shortcut couldn't be registered.
     @discardableResult
     func register(_ combo: Combo) -> Bool {
         if let ref { UnregisterEventHotKey(ref) }

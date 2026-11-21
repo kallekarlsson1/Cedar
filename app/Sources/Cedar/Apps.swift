@@ -1,6 +1,6 @@
 import AppKit
 
-/// Installed apps, kept in memory and matched on every keystroke: "saf" → Safari, "vsc" → Visual Studio Code.
+/// Installed apps, matched by prefix, word, initials or subsequence.
 final class Apps {
     struct App { let name: String; let url: URL; let lower: String; let initials: String; let words: [String] }
 
@@ -35,7 +35,7 @@ final class Apps {
 
     private static func make(_ name: String, _ url: URL) -> App {
         let lower = name.lowercased()
-        // Words split at spaces and at lower→upper changes: "VisualStudioCode", "iTerm" stay sensible.
+        // Split into words at separators and at lower-to-upper case changes.
         var words: [String] = []
         var current = ""
         for ch in name {
@@ -51,7 +51,7 @@ final class Apps {
         return App(name: name, url: url, lower: lower, initials: String(words.compactMap(\.first)), words: words)
     }
 
-    /// Scored matches, best first. Scores: 100 exact … 40 scattered letters.
+    /// Matches with scores from 100 (exact) down to about 40 (subsequence), best first.
     func search(_ query: String) -> [(App, Double)] {
         let q = query.lowercased().trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return [] }
@@ -71,7 +71,7 @@ final class Apps {
         return out.sorted { $0.1 > $1.1 }
     }
 
-    /// The query's letters in order inside the name; returns how many letters were skipped between them.
+    /// Subsequence match. Returns the number of skipped letters, or nil.
     private static func scattered(_ q: String, in name: String) -> Int? {
         var gaps = 0, started = false
         var qi = q.startIndex
@@ -84,9 +84,9 @@ final class Apps {
     }
 }
 
-/// What you open, and how recently: it lifts things you use over things you don't.
+/// Open counts and times, used to rank frequently used items higher.
 final class Usage {
-    private var entries: [String: [Double]] = [:]   // path → [count, last opened]
+    private var entries: [String: [Double]] = [:]   // path: [count, last opened]
     private let file: URL
 
     init(dataDir: URL) {
@@ -102,7 +102,7 @@ final class Usage {
         if let data = try? JSONEncoder().encode(entries) { try? data.write(to: file, options: .atomic) }
     }
 
-    /// 0 … 20: more for things opened often and lately (half-life two weeks).
+    /// Boost from 0 to 20, decaying with a two-week half-life.
     func boost(_ path: String) -> Double {
         guard let e = entries[path], e.count == 2 else { return 0 }
         let days = (Date().timeIntervalSince1970 - e[1]) / 86400

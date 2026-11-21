@@ -23,7 +23,7 @@ enum Item {
     var selectable: Bool { if case .header = self { return false }; return true }
 }
 
-/// Which group a file goes in, as Spotlight groups them.
+/// Result groups.
 enum Group: Int, CaseIterable {
     case pdf, documents, folders, images, other
     var title: String {
@@ -47,7 +47,7 @@ enum Group: Int, CaseIterable {
     }
 }
 
-/// The floating panel: a borderless window that takes the keyboard without pulling the app in front.
+/// Borderless panel that can become key without activating the app.
 final class Panel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
@@ -61,7 +61,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
 
     private let panel: Panel
     private let field = NSTextField()
-    private let inline = NSTextField(labelWithString: "")   // the answer or top hit, in gray after what you typed
+    private let inline = NSTextField(labelWithString: "")
     private let table = HoverTable()
     private let scroll = NSScrollView()
     private let detail = DetailView()
@@ -71,7 +71,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
     private var generation = 0
     private var deepWork: DispatchWorkItem?
     private var keyMonitor: Any?
-    private var navigated = false      // moved through results since the last keystroke: Space previews
+    private var navigated = false
     private var bodyHeight: NSLayoutConstraint!
     private var isAnswerOnly = false
 
@@ -170,7 +170,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
         line.translatesAutoresizingMaskIntoConstraints = false
 
         for v in [glass, field, inline, divider, scroll, line, detail] { background.addSubview(v) }
-        // Without a set height, Auto Layout shrinks the window to the smallest size its contents allow (just the bar).
+        // The results area needs an explicit height; Auto Layout would otherwise collapse the window to the bar.
         bodyHeight = scroll.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             glass.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 20),
@@ -198,23 +198,6 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
 
         NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: panel, queue: .main) {
             [weak self] _ in self?.hide()
-        }
-    }
-
-    // MARK: testing
-
-    /// Types `query` into the panel, waits for the answers, and saves a picture of the panel:
-    /// `Cedar --snapshot "query" out.png [row]`.
-    func debugSnapshot(_ query: String, to path: String, row: Int? = nil) {
-        show()
-        field.stringValue = query
-        run(query)
-        RunLoop.main.run(until: Date().addingTimeInterval(2.5))
-        if let row, row < items.count { select(row); RunLoop.main.run(until: Date().addingTimeInterval(1.5)) }
-        print("items:", items.count, "selected:", table.selectedRow, "panel:", panel.frame)
-        if let view = panel.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-            view.cacheDisplay(in: view.bounds, to: rep)
-            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
         }
     }
 
@@ -253,13 +236,13 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
         var frame = panel.frame
         let top = frame.maxY
         frame.size = NSSize(width: width, height: height)
-        frame.origin.y = top - height          // grow downwards from the bar
+        frame.origin.y = top - height
         panel.setFrame(frame, display: true)
         panel.contentView?.layoutSubtreeIfNeeded()
         updateInline()
     }
 
-    /// The answer ("= 121,57 kr") or the top hit ("— Safari") in gray, right after what you typed.
+    /// Shows the answer or the top app in gray after the typed text.
     private func updateInline() {
         let typed = field.stringValue
         var hint: String?
@@ -298,8 +281,8 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
             show(items: [])
             return
         }
-        rebuild(q)   // instantly: math, conversions, apps (and the last answer while the new one comes)
-        if isAnswerOnly { answer = nil; return }   // math or a conversion: the answer is all you see
+        rebuild(q)
+        if isAnswerOnly { answer = nil; return }
         engine.search(text, deep: false) { [weak self] a in
             guard let self, g == self.generation, let a else { return }
             self.answer = a
@@ -336,7 +319,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
         let appHits = apps.search(q).map { ($0.0, $0.1 + usage.boost($0.0.url.path)) }
             .filter { $0.1 >= 40 }.sorted { $0.1 > $1.1 }
 
-        // Documents from the engine keep its order (meaning + words); name matches follow within each group.
+        // Within a group, engine results come first in their own order, then name matches.
         var grouped: [Group: [Item]] = [:]
         var seen = Set<String>()
         for d in answer?.docs ?? [] where seen.insert(d.path).inserted {
@@ -347,7 +330,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
             grouped[Group.of(path: f.path, isDir: f.dir), default: []].append(.file(f))
         }
 
-        // Top hit: an answer, a strongly matching app, a file named exactly what you typed, or the best document.
+        // Top hit: an answer, a strong app match, an exact file name, or the best document.
         var top: Item?
         if let first = answers.first { top = first; answers.removeFirst() }
         else if let a = appHits.first, a.1 >= 74 { top = .app(a.0) }
@@ -410,15 +393,15 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
     private func handle(_ event: NSEvent) -> Bool {
         let cmd = event.modifierFlags.contains(.command)
         switch Int(event.keyCode) {
-        case 125: move(1); return true                     // ↓
-        case 126: move(-1); return true                    // ↑
-        case 36, 76:                                       // ↩
+        case 125: move(1); return true   // down
+        case 126: move(-1); return true   // up
+        case 36, 76:   // return
             cmd ? revealSelected() : openSelected()
             return true
-        case 53:                                           // esc
+        case 53:   // escape
             if field.stringValue.isEmpty { hide() } else { field.stringValue = ""; run("") }
             return true
-        case 49 where navigated && !cmd:                   // space after moving: preview
+        case 49 where navigated && !cmd:   // space
             preview(); return true
         default: break
         }
@@ -468,7 +451,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
         case .doc(let d):
             usage.opened(d.path)
             engine.opened(d.path)
-            // Preview and most apps read the find pasteboard: ⌘G jumps to the words you searched for.
+            // Put the query on the find pasteboard so ⌘G in the viewer jumps to it.
             let find = NSPasteboard(name: .find)
             find.clearContents()
             find.setString(field.stringValue.trimmingCharacters(in: .whitespaces), forType: .string)
@@ -543,7 +526,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
     }
 }
 
-/// A results list that tells when the pointer moves over a row: hovering a result shows it in the reader.
+/// Table view that reports the row under the pointer.
 final class HoverTable: NSTableView {
     var onHover: ((Int) -> Void)?
     private var tracking: NSTrackingArea?
@@ -561,7 +544,7 @@ final class HoverTable: NSTableView {
     }
 }
 
-/// Thumbnail (or icon), name, and the folder it's in.
+/// Result row: thumbnail, name and containing folder.
 final class ResultCell: NSView {
     private let icon = NSImageView()
     private let title = NSTextField(labelWithString: "")
@@ -629,13 +612,12 @@ final class ResultCell: NSView {
     }
 }
 
-/// The right side: a preview (a PDF at the page that matched, with your words highlighted; Quick Look for the
-/// rest), then what the file is and where it lives.
+/// Reader pane: a PDF view, a Markdown view or Quick Look, with a one-line caption.
 final class DetailView: NSView {
     private let previewArea = NSView()
-    private let noteScroll = NSScrollView()    // a Markdown note, formatted
+    private let noteScroll = NSScrollView()
     private let noteText = NSTextView()
-    private let reader = PDFView()             // the whole PDF, scrolling, opened at the page that matched
+    private let reader = PDFView()
     private let quickLook: QLPreviewView = QLPreviewView(frame: .zero, style: .compact)!
     private let bigIcon = NSImageView()
     private let bigText = NSTextField(wrappingLabelWithString: "")
@@ -648,7 +630,7 @@ final class DetailView: NSView {
     init() {
         super.init(frame: .zero)
         reader.displayMode = .singlePageContinuous
-        reader.autoScales = true                      // a page fills the reader's width
+        reader.autoScales = true
         reader.displaysPageBreaks = true
         reader.pageShadowsEnabled = false
         reader.backgroundColor = NSColor(white: 0.5, alpha: 0.18)
@@ -716,7 +698,6 @@ final class DetailView: NSView {
             addSubview(v)
         }
         NSLayoutConstraint.activate([
-            // The reader takes nearly all of the pane; a caption sits under it.
             previewArea.topAnchor.constraint(equalTo: topAnchor, constant: 10),
             previewArea.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             previewArea.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
@@ -795,7 +776,7 @@ final class DetailView: NSView {
         quickLook.previewItem = URL(fileURLWithPath: path) as NSURL
     }
 
-    /// A Markdown note, formatted, scrolled to the first of the words you typed.
+    /// Shows a Markdown file, scrolled to the first highlighted word.
     private var lastQuery = ""
     private func showNote(_ path: String) -> Bool {
         guard let data = FileManager.default.contents(atPath: path), data.count < 3_000_000 else { return false }
@@ -811,7 +792,7 @@ final class DetailView: NSView {
         return true
     }
 
-    /// The document in the reader, scrolled to the page that matched, with the words you typed marked on it.
+    /// Shows a PDF at the matched page with the query words highlighted.
     private var shownPath: String?
     private let loadQueue = DispatchQueue(label: "cedar.pdf", qos: .userInitiated)
 
@@ -833,7 +814,7 @@ final class DetailView: NSView {
                 self.reader.document = doc
                 self.shownPath = path
                 self.reader.autoScales = true
-                DispatchQueue.main.async { self.go(to: page, words: words) }     // after the pages are laid out
+                DispatchQueue.main.async { self.go(to: page, words: words) }
             }
         }
     }
@@ -882,13 +863,13 @@ final class DetailView: NSView {
         return rows
     }
 
-    /// One line under the reader: "PDF document · page 3 of 12 · 4,4 MB · Today 14:02 · ~/Papers".
+    /// Caption text: kind, page, size, date and folder.
     private static func facts(_ rows: [(String, String)]) -> NSAttributedString {
         NSAttributedString(string: rows.map(\.1).joined(separator: "  ·  "),
                            attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor])
     }
 
-    /// «matched words» in bold.
+    /// Renders «matched words» from a snippet in bold.
     static func highlight(_ text: String) -> NSAttributedString {
         let out = NSMutableAttributedString()
         let normal: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor]
@@ -924,7 +905,7 @@ final class Icons {
     }
 }
 
-/// Quick Look thumbnails (a PDF's first page, a picture itself), made in the background; the icon until then.
+/// Quick Look thumbnails, generated asynchronously. Returns the file icon until one is ready.
 final class Thumbnails {
     static let shared = Thumbnails()
     var onReady: ((String) -> Void)?
