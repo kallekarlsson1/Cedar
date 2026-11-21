@@ -91,7 +91,7 @@ class Names:
                        "VALUES(?,?,?,?,?,?,?)", batch)
         db.executescript("""
             CREATE VIRTUAL TABLE names_new USING fts5(name, tokenize='trigram remove_diacritics 1');
-            INSERT INTO names_new(rowid, name) SELECT id, name FROM entries_new;
+            INSERT INTO names_new(rowid, name) SELECT id, name FROM entries_new WHERE crowded = 0;
         """)
         db.commit()
         with self.lock:
@@ -102,8 +102,102 @@ class Names:
                 CREATE INDEX IF NOT EXISTS entries_name ON entries(name);
                 COMMIT;
             """)
+            db.execute("PRAGMA user_version = 2")
+        db.commit()
+        db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        db.execute("VACUUM")          # the old tables' pages go back to the disk
+        db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         db.close()
         log(f"names: {self.count()} entries in {time.time() - started:.0f}s")
+
+    def needs_rebuild(self) -> bool:
+        with self.lock:
+            return self.db.execute("PRAGMA user_version").fetchone()[0] < 2 or \
+                self.db.execute("SELECT COUNT(*) FROM entries").fetchone()[0] == 0
+
+    def catch_up(self, log=print) -> int:
+        """Finds what changed while Sift wasn't running, without listing everything: a folder's modification time
+        changes when something in it is added, removed or renamed, so only folders whose time moved are read
+        again (hundreds of stat calls instead of 650,000 files)."""
+        started = time.time()
+        with self.lock:
+            dirs = self.db.execute("SELECT path, mtime FROM entries WHERE is_dir = 1").fetchall()
+        changed = [str(r) for r in config.roots()]
+        for path, mtime in dirs:
+            p = Path(path)
+            if config.skip_dir(p, p.name):
+                continue
+            try:
+                now = os.stat(path, follow_symlinks=False).st_mtime
+            except OSError:
+                self.remove(path)
+                continue
+            if now != mtime:
+                changed.append(path)
+        touched = 0
+        for folder in changed:
+            touched += self._reread(folder)
+        log(f"names: caught up in {time.time() - started:.1f}s ({len(changed)} folders read, {touched} changes)")
+        return touched
+
+    def _reread(self, folder: str) -> int:
+        """Brings one folder's direct children in line with the disk. Returns how many entries changed."""
+        try:
+            with os.scandir(folder) as it:
+                listed = {e.path: e for e in it if not e.name.startswith(".") and e.name not in config.SKIP_NAMES
+                          and Path(e.path) not in config.SKIP_PATHS}
+        except OSError:
+            return 0
+        crowded = int(len(listed) > config.CROWDED)
+        with self.lock:
+            known = {r[0]: r[1] for r in self.db.execute(
+                "SELECT path, crowded FROM entries WHERE path > ? AND path < ? AND instr(substr(path, ?), '/') = 0",
+                (folder + "/", folder + "0", len(folder) + 2))}
+        changes = 0
+        for path in known.keys() - listed.keys():
+            self.remove(path)
+            changes += 1
+        new_dirs = []
+        with self.lock:
+            for path in listed.keys() - known.keys():
+                e = listed[path]
+                try:
+                    is_dir = e.is_dir(follow_symlinks=False)
+                    st = e.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                self._insert(path, e.name, int(is_dir), st.st_mtime, st.st_size, path.count("/"), crowded)
+                changes += 1
+                if is_dir and not config.skip_dir(Path(path), e.name):
+                    new_dirs.append(path)
+            if known and next(iter(known.values())) != crowded:      # the folder crossed the dataset line
+                ids = [r[0] for r in self.db.execute(
+                    "SELECT id FROM entries WHERE path > ? AND path < ? AND instr(substr(path, ?), '/') = 0",
+                    (folder + "/", folder + "0", len(folder) + 2))]
+                for i in ids:
+                    self.db.execute("UPDATE entries SET crowded = ? WHERE id = ?", (crowded, i))
+                    self.db.execute("DELETE FROM names WHERE rowid = ?", (i,))
+                    if not crowded:
+                        self.db.execute("INSERT INTO names(rowid, name) SELECT id, name FROM entries WHERE id = ?", (i,))
+            try:
+                self.db.execute("UPDATE entries SET mtime = ? WHERE path = ?", (os.stat(folder).st_mtime, folder))
+            except OSError:
+                pass
+            self.db.commit()
+        for d in new_dirs:                   # a new folder: everything in it is new
+            with self.lock:
+                for row in walk(Path(d)):
+                    self._insert(*row[:5], row[0].count("/"), row[6])
+                    changes += 1
+                self.db.commit()
+        return changes
+
+    def _insert(self, path, name, is_dir, mtime, size, depth, crowded):
+        cur = self.db.execute(
+            "INSERT OR IGNORE INTO entries(path,name,is_dir,mtime,size,depth,crowded) VALUES(?,?,?,?,?,?,?)",
+            (path, name, is_dir, mtime, size, depth, crowded))
+        if cur.rowcount and not crowded:
+            self.db.execute("INSERT INTO names(rowid, name) VALUES(?, ?)", (cur.lastrowid, name))
 
     # Live updates from the file watcher.
     def upsert(self, path: str):
@@ -114,14 +208,15 @@ class Names:
             return self.remove(path)
         is_dir = int(p.is_dir() and not p.is_symlink())
         depth = len(p.parts) - len(config.HOME.parts) if p.is_relative_to(config.HOME) else len(p.parts)
+        parent = str(p.parent)
         with self.lock:
-            self.db.execute(
-                "INSERT INTO entries(path,name,is_dir,mtime,size,depth) VALUES(?,?,?,?,?,?) "
-                "ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, size=excluded.size",
-                (path, p.name, is_dir, st.st_mtime, st.st_size, depth))
-            (rowid,) = self.db.execute("SELECT id FROM entries WHERE path = ?", (path,)).fetchone()
-            if not self.db.execute("SELECT 1 FROM names WHERE rowid = ?", (rowid,)).fetchone():
-                self.db.execute("INSERT INTO names(rowid, name) VALUES(?, ?)", (rowid, p.name))
+            known = self.db.execute("SELECT id FROM entries WHERE path = ?", (path,)).fetchone()
+            if known:
+                self.db.execute("UPDATE entries SET mtime = ?, size = ? WHERE id = ?", (st.st_mtime, st.st_size, known[0]))
+            else:
+                sibling = self.db.execute("SELECT crowded FROM entries WHERE path > ? AND path < ? LIMIT 1",
+                                          (parent + "/", parent + "0")).fetchone()
+                self._insert(path, p.name, is_dir, st.st_mtime, st.st_size, depth, sibling[0] if sibling else 0)
             self.db.commit()
 
     def remove(self, path: str):
@@ -147,6 +242,12 @@ class Names:
                 rows = self.db.execute(
                     "SELECT e.path, e.name, e.is_dir, e.mtime, e.depth, e.crowded FROM names "
                     "JOIN entries e ON e.id = names.rowid WHERE names MATCH ? LIMIT 3000", (match,)).fetchall()
+                # Files in dataset folders (99% of all names here) aren't in the trigram index: they're found by
+                # how their name starts, through the ordinary index.
+                w = words[0].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                rows += self.db.execute(
+                    "SELECT path, name, is_dir, mtime, depth, crowded FROM entries WHERE name LIKE ? ESCAPE '\\' "
+                    "AND crowded = 1 LIMIT 40", (w + "%",)).fetchall()
             else:
                 # One or two letters: names that start with them.
                 w = words[0].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

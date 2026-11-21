@@ -48,11 +48,11 @@ def on_battery() -> bool:
 
 # ---- reader process ---------------------------------------------------------------------------------------------
 
-def reader_main(state, parent_pid: int):
+def reader_main(state, work, parent_pid: int):
     _setup_logging()
     os.nice(10)
     config.set_priority("background")
-    reader = Reader(state)
+    reader = Reader(state, work)
     try:
         reader.run(parent_pid)
     except Exception:
@@ -60,7 +60,9 @@ def reader_main(state, parent_pid: int):
 
 
 class Reader:
-    def __init__(self, state):
+    def __init__(self, state, work):
+        self.work = work                       # counts up when there may be new passages to embed
+        self.woke = threading.Event()
         self.names = Names()
         self.content = Content(None, vectors=False)
         self.state = state
@@ -71,31 +73,41 @@ class Reader:
         self.state.value = text.encode()[:63]
 
     def run(self, parent_pid: int):
-        listed_before = self.names.count() > 0
         self._watch()
-        if not listed_before:
+        if self.names.needs_rebuild():
             self.set_state("listing files")
             self.names.rebuild(log=log.info)
-        self.set_state("reading documents")
-        self.content.sync(self._wanted(), log=log.info)
-        self.content.mark_copies(log=log.info)
-        if listed_before:
-            # Search ran on the last run's index meanwhile; now catch what changed while Sift wasn't running.
+        else:
+            # Search is already up on the last run's index; find what changed while Sift wasn't running.
             self.set_state("checking for changes")
-            self._relist()
+            self.names.catch_up(log=log.info)
+            for (path,) in self.content.db.execute("SELECT path FROM docs").fetchall():
+                self.names.upsert(path)          # a document edited in place: its new time (or its absence)
+        self.set_state("reading documents")
+        self._sync()
         last_full = time.time()
         self.set_state("up to date")
         while os.getppid() == parent_pid:
-            time.sleep(2)
+            self.woke.wait(60)                   # sleeps until a file changes
+            self.woke.clear()
+            time.sleep(2)                        # let a burst of changes (a download, a save) finish
             self._apply_changes()
-            if time.time() - last_full > 24 * 3600:   # a safety net; changes arrive live
+            if time.time() - last_full > 7 * 24 * 3600:   # a safety net; changes arrive live
                 self._relist()
                 last_full = time.time()
 
-    def _relist(self):
-        self.names.rebuild(log=log.info)
+    def _sync(self):
         self.content.sync(self._wanted(), log=log.info)
         self.content.mark_copies(log=log.info)
+        self._more_work()
+
+    def _more_work(self):
+        with self.work.get_lock():
+            self.work.value += 1
+
+    def _relist(self):
+        self.names.rebuild(log=log.info)
+        self._sync()
 
     def _wanted(self) -> dict[str, tuple[float, int]]:
         exts = tuple(config.DOC_EXTS)
@@ -114,6 +126,8 @@ class Reader:
                 paths = [event.src_path, getattr(event, "dest_path", "")]
                 with reader.lock:
                     reader.changed.update(p for p in paths if isinstance(p, str) and p and not _ignored(Path(p)))
+                    if reader.changed:
+                        reader.woke.set()
 
         observer = Observer()
         for root in config.roots():
@@ -137,6 +151,7 @@ class Reader:
                     if not known or known[0] != st.st_mtime:
                         self.content.add(path, st.st_mtime, st.st_size)
                         self.content.mark_copies(log=log.info, only=path)
+                        self._more_work()
             else:
                 self.names.remove(path)
                 self.content.remove_path(path)
@@ -160,12 +175,13 @@ class Engine:
         self.names = Names()
         self.embedder = Embedder()
         self.content = Content(self.embedder)
-        self.reader_state = mp.Array("c", 64)
+        self.reader_state = mp.get_context("spawn").Array("c", 64)
+        self.work = mp.get_context("spawn").Value("i", 0)
         self.last_search = 0.0
 
     def start(self):
         ctx = mp.get_context("spawn")
-        self.reader = ctx.Process(target=reader_main, args=(self.reader_state, os.getpid()), daemon=True)
+        self.reader = ctx.Process(target=reader_main, args=(self.reader_state, self.work, os.getpid()), daemon=True)
         self.reader.start()
         threading.Thread(target=self._embed_loop, daemon=True).start()
 
@@ -186,6 +202,7 @@ class Engine:
             log.exception("model failed to load; searching by words only")
             return
         last_cleanup = time.time()
+        checked = None
         while True:
             idle = time.time() - self.last_search
             if idle < IDLE_BEFORE_EMBEDDING:
@@ -196,7 +213,13 @@ class Engine:
                 last_cleanup = time.time()
             battery = on_battery()
             if not self.embedder.loaded:
-                # Unloaded while idle: come back only when there's work it's allowed to do now.
+                # Unloaded while idle: come back only when there's work it's allowed to do now. The database is
+                # asked only when the reader reported something new or the charger was (un)plugged.
+                seen = (self.work.value, battery)
+                if seen == checked:
+                    time.sleep(5)
+                    continue
+                checked = seen
                 progress = self.content.progress()
                 if progress["first_pass_left"] or (progress["to_embed"] and not battery):
                     self._wake()

@@ -30,7 +30,8 @@ engine, model process             Qwen3-Embedding (8-bit) on llama.cpp + Metal, 
                                   you're not searching, quits after 2 idle minutes, back in 0.4 s
    │
 ~/Library/Application Support/Sift/
-   names.db     every file and folder name, trigram index (~650k names, 15 s to list)
+   names.db     every file and folder name; trigram index for all but dataset folders' files, which are
+                found by the start of their name. After the first listing, a start reads only changed folders
    content.db   passages with page numbers, FTS5 keyword index, Qwen3-Embedding-0.6B vectors
 ```
 

@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS shingles(hash INTEGER NOT NULL, doc INTEGER NOT NULL)
 CREATE INDEX IF NOT EXISTS shingles_hash ON shingles(hash);
 CREATE INDEX IF NOT EXISTS shingles_doc ON shingles(doc);
 CREATE INDEX IF NOT EXISTS chunks_todo ON chunks(first_pass, doc) WHERE vec IS NULL;
+-- Finds passages with the same text that still lack a vector ("paper (1).pdf"): one embedding serves them all.
+CREATE INDEX IF NOT EXISTS chunks_twin ON chunks(substr(text, 1, 40)) WHERE vec IS NULL;
 -- d holds one token naming the passage's document ("x42"), so one document's passages are found directly.
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(name, head, body, refs, d,
@@ -283,9 +285,19 @@ class Content:
         rows = rows[: len(vecs)]
         if not rows:
             return 0
+        twins = []
         with self.db as db:
-            db.executemany("UPDATE chunks SET vec = ? WHERE id = ?",
-                           [(v.tobytes(), r[0]) for v, r in zip(vecs, rows)])
+            for v, r in zip(vecs, rows):
+                db.execute("UPDATE chunks SET vec = ? WHERE id = ?", (v.tobytes(), r[0]))
+                for cid, doc in db.execute(
+                        """UPDATE chunks SET vec = ? WHERE vec IS NULL AND substr(text, 1, 40) = substr(?, 1, 40)
+                           AND text = ? AND region IN ('head', 'body')
+                           AND doc IN (SELECT id FROM docs WHERE embed = 1) RETURNING id, doc""",
+                        (v.tobytes(), r[2], r[2])).fetchall():
+                    twins.append((cid, doc, r[2], None, v))
+        if twins:
+            vecs = np.concatenate([vecs, np.stack([t[4] for t in twins])])
+            rows = rows + [t[:4] for t in twins]
         # A document deleted meanwhile keeps no vectors.
         live = {d for (d,) in self.db.execute(
             f"SELECT id FROM docs WHERE id IN ({','.join('?' * len(rows))})", [r[1] for r in rows])}
