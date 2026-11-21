@@ -58,6 +58,7 @@ class Reader:
             self.names.rebuild(log=log.info)
         self.set_state("reading documents")
         self.content.sync(self._wanted(), log=log.info)
+        self.content.mark_copies(log=log.info)
         if listed_before:
             # Search ran on the last run's index meanwhile; now catch what changed while Sift wasn't running.
             self.set_state("checking for changes")
@@ -74,6 +75,7 @@ class Reader:
     def _relist(self):
         self.names.rebuild(log=log.info)
         self.content.sync(self._wanted(), log=log.info)
+        self.content.mark_copies(log=log.info)
 
     def _wanted(self) -> dict[str, tuple[float, int]]:
         exts = tuple(config.DOC_EXTS)
@@ -114,6 +116,7 @@ class Reader:
                     known = self.content.db.execute("SELECT mtime FROM docs WHERE path = ?", (path,)).fetchone()
                     if not known or known[0] != st.st_mtime:
                         self.content.add(path, st.st_mtime, st.st_size)
+                        self.content.mark_copies(log=log.info)
             else:
                 self.names.remove(path)
                 self.content.remove_path(path)
@@ -161,7 +164,8 @@ class Engine:
                 self.content.forget_deleted()
                 last_cleanup = time.time()
             try:
-                done = self.content.embed_some(limit=16)
+                done = self.content.embed_some(
+                    limit=32, pause=lambda: time.time() - self.last_search < IDLE_BEFORE_EMBEDDING)
             except Exception:
                 log.exception("embedding failed")
                 done = 0

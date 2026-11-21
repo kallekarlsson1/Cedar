@@ -39,13 +39,14 @@ class Embedder:
             with self._count_lock:
                 self._waiting_queries -= 1
 
-    def documents(self, texts: list[str]) -> np.ndarray:
-        # Small steps, so a search never waits behind more than a few passages (~0.15 s), and waiting searches go first.
+    def documents(self, texts: list[str], pause=lambda: False) -> np.ndarray:
+        """Embeds in steps of 4 passages (~0.4 s), checking `pause` before each: when someone is searching it stops
+        early and returns the vectors made so far, the first len(result) of `texts`."""
         out = []
-        for i in range(0, len(texts), 2):
-            while self._waiting_queries:
-                threading.Event().wait(0.005)
+        for i in range(0, len(texts), 4):
+            if self._waiting_queries or pause():
+                break
             with self._lock:
-                out.append(self.model.encode(texts[i:i + 2], batch_size=2, normalize_embeddings=True,
+                out.append(self.model.encode(texts[i:i + 4], batch_size=4, normalize_embeddings=True,
                                              convert_to_numpy=True, show_progress_bar=False).astype(np.float16))
         return np.concatenate(out) if out else np.zeros((0, DIM), np.float16)

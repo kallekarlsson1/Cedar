@@ -2,6 +2,7 @@
 
 import math
 import re
+import zlib
 import sqlite3
 import threading
 import time
@@ -32,6 +33,10 @@ CREATE TABLE IF NOT EXISTS chunks(
     vec BLOB                            -- 1024 x float16, normalized; NULL until embedded (or never: name, refs)
 );
 CREATE INDEX IF NOT EXISTS chunks_doc ON chunks(doc);
+-- Hashes of 4-word runs from the start of each document: finds text files that copy a PDF.
+CREATE TABLE IF NOT EXISTS shingles(hash INTEGER NOT NULL, doc INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS shingles_hash ON shingles(hash);
+CREATE INDEX IF NOT EXISTS shingles_doc ON shingles(doc);
 CREATE INDEX IF NOT EXISTS chunks_todo ON chunks(first_pass, doc) WHERE vec IS NULL;
 -- d holds one token naming the passage's document ("x42"), so one document's passages are found directly.
 CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(name, head, body, refs, d,
@@ -176,6 +181,7 @@ class Content:
                 first = int(p.region == "head" or (p.page or 0) <= config.FIRST_PASS_PAGES and p.page is not None
                             or p.page is None and i < config.FIRST_PASS_CHUNKS)
                 self._insert(doc_id, p.region, p.page, i, p.text, first)
+            self._fingerprint(doc_id)
 
     def _insert(self, doc, region, page, order, text, first):
         cur = self.db.execute("INSERT INTO chunks(doc, region, page, ord, text, first_pass) VALUES(?,?,?,?,?,?)",
@@ -189,6 +195,7 @@ class Content:
         with self.db as db:
             db.execute("DELETE FROM fts WHERE rowid IN (SELECT id FROM chunks WHERE doc = ?)", (doc,))
             db.execute("DELETE FROM docfts WHERE rowid = ?", (doc,))
+            db.execute("DELETE FROM shingles WHERE doc = ?", (doc,))
             db.execute("DELETE FROM chunks WHERE doc = ?", (doc,))
             db.execute("DELETE FROM docs WHERE id = ?", (doc,))
         self.dead_docs.add(doc)
@@ -198,7 +205,40 @@ class Content:
         if row:
             self._delete(row[0])
 
-    def embed_some(self, limit=64) -> int:
+    # ---- copies ---------------------------------------------------------------------------------------------------
+
+    def _fingerprint(self, doc: int):
+        texts = [t for (t,) in self.db.execute(
+            "SELECT text FROM chunks WHERE doc = ? AND region IN ('head', 'body') ORDER BY ord LIMIT 8", (doc,))]
+        words = re.findall(r"[a-z0-9]+", " ".join(texts).lower())[:1200]
+        hashes = {zlib.crc32(" ".join(words[i:i + 4]).encode()) for i in range(max(len(words) - 3, 0))}
+        self.db.executemany("INSERT INTO shingles(hash, doc) VALUES(?, ?)", [(h, doc) for h in hashes])
+
+    def mark_copies(self, log=print):
+        """Text and Markdown files that copy a PDF ("paper.txt" next to "paper.pdf") keep their words in keyword
+        search but aren't embedded: the PDF carries the meaning. PDFs themselves are never skipped."""
+        db = self.db
+        with db:
+            for (doc,) in db.execute("SELECT id FROM docs WHERE id NOT IN (SELECT DISTINCT doc FROM shingles)").fetchall():
+                self._fingerprint(doc)
+        candidates = db.execute("""SELECT id FROM docs WHERE embed = 1 AND state = 'ok' AND
+            (path LIKE '%.txt' OR path LIKE '%.md' OR path LIKE '%.html' OR path LIKE '%.htm')""").fetchall()
+        copies = 0
+        for (doc,) in candidates:
+            total = db.execute("SELECT COUNT(*) FROM shingles WHERE doc = ?", (doc,)).fetchone()[0]
+            if total < 50:
+                continue
+            best = db.execute("""SELECT COUNT(*) FROM shingles a JOIN shingles b ON b.hash = a.hash AND b.doc != a.doc
+                JOIN docs d ON d.id = b.doc WHERE a.doc = ? AND lower(d.path) LIKE '%.pdf'
+                GROUP BY b.doc ORDER BY 1 DESC LIMIT 1""", (doc,)).fetchone()
+            if best and best[0] / total >= 0.3:
+                with db:
+                    db.execute("UPDATE docs SET embed = 0 WHERE id = ?", (doc,))
+                copies += 1
+        if copies:
+            log(f"{copies} text copies of PDFs: found by their words, not embedded again")
+
+    def embed_some(self, limit=64, pause=lambda: False) -> int:
         """Embeds the next passages: first pages of every document before the rest. Returns how many it did."""
         rows = self.db.execute("""
             SELECT c.id, c.doc, c.text, c.region FROM chunks c JOIN docs d ON d.id = c.doc
@@ -207,7 +247,10 @@ class Content:
             LIMIT ?""", (limit,)).fetchall()
         if not rows:
             return 0
-        vecs = self.embedder.documents([r[2] for r in rows])
+        vecs = self.embedder.documents([r[2] for r in rows], pause=pause)
+        rows = rows[: len(vecs)]
+        if not rows:
+            return 0
         with self.db as db:
             db.executemany("UPDATE chunks SET vec = ? WHERE id = ?",
                            [(v.tobytes(), r[0]) for v, r in zip(vecs, rows)])

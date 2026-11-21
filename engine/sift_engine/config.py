@@ -52,8 +52,8 @@ MAX_TEXT_BYTES = 30_000_000   # plain-text files larger than this are data, not 
 MAX_PDF_BYTES = 400_000_000
 
 # Embedding order: the first pages of everything before the rest of long documents.
-FIRST_PASS_PAGES = 12
-FIRST_PASS_CHUNKS = 40
+FIRST_PASS_PAGES = 3
+FIRST_PASS_CHUNKS = 10
 
 
 def skip_dir(path: Path, name: str) -> bool:
