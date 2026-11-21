@@ -266,11 +266,13 @@ class Content:
         if copies:
             log(f"{copies} text copies of PDFs: found by their words, not embedded again")
 
-    def embed_some(self, limit=64, pause=lambda: False) -> int:
-        """Embeds the next passages: first pages of every document before the rest. Returns how many it did."""
-        rows = self.db.execute("""
+    def embed_some(self, limit=64, pause=lambda: False, first_pass_only=False) -> int:
+        """Embeds the next passages: first pages of every document before the rest. Returns how many it did.
+        `first_pass_only`: just titles and first pages (on battery)."""
+        rows = self.db.execute(f"""
             SELECT c.id, c.doc, c.text, c.region FROM chunks c JOIN docs d ON d.id = c.doc
             WHERE c.vec IS NULL AND d.embed = 1 AND c.region IN ('head', 'body')
+            {"AND c.first_pass = 1" if first_pass_only else ""}
             ORDER BY c.first_pass DESC, CASE WHEN c.first_pass = 1 THEN -d.mtime ELSE d.size END, c.ord
             LIMIT ?""", (limit,)).fetchall()
         if not rows:

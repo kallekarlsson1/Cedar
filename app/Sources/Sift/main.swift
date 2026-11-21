@@ -103,6 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let total = s.vectors + s.to_embed
                 let pct = total > 0 ? Int(Double(s.vectors) / Double(total) * 100) : 0
                 line += " · understanding \(pct)%"
+                if s.state == "waiting for the charger" { line += " (paused on battery)" }
             } else if s.state != "up to date" && s.state != "embedding" {
                 line += " · \(s.state)"
             }

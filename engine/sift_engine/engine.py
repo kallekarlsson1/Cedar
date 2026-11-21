@@ -10,6 +10,7 @@ Protocol: one JSON object per line each way.
 
 import json
 import logging
+import subprocess
 import multiprocessing as mp
 import os
 import socketserver
@@ -26,6 +27,22 @@ log = logging.getLogger("sift")
 
 IDLE_BEFORE_EMBEDDING = 15.0   # seconds after the last search before the GPU goes back to indexing
 IDLE_BEFORE_UNLOAD = 600.0     # with nothing left to embed, free the model after this long without a search
+
+
+_power = {"checked": 0.0, "battery": False}
+
+
+def on_battery() -> bool:
+    """True when the Mac runs on battery (checked once a minute). On battery Sift embeds only titles and first
+    pages, a few passages per new document; the long tail waits for the charger, as Spotlight's indexing does."""
+    if time.time() - _power["checked"] > 60:
+        try:
+            out = subprocess.run(["/usr/bin/pmset", "-g", "batt"], capture_output=True, text=True, timeout=5).stdout
+            _power["battery"] = "Battery Power" in out
+        except Exception:
+            _power["battery"] = False
+        _power["checked"] = time.time()
+    return _power["battery"]
 
 
 # ---- reader process ---------------------------------------------------------------------------------------------
@@ -176,16 +193,19 @@ class Engine:
             if time.time() - last_cleanup > 600:
                 self.content.forget_deleted()
                 last_cleanup = time.time()
+            battery = on_battery()
             if not self.embedder.loaded:
-                # Unloaded while idle: come back only when there's new work.
-                if self.content.progress()["to_embed"]:
+                # Unloaded while idle: come back only when there's work it's allowed to do now.
+                progress = self.content.progress()
+                if progress["first_pass_left"] or (progress["to_embed"] and not battery):
                     self._wake()
                 else:
                     time.sleep(5)
                 continue
             try:
                 done = self.content.embed_some(
-                    limit=32, pause=lambda: time.time() - self.last_search < IDLE_BEFORE_EMBEDDING)
+                    limit=32, pause=lambda: time.time() - self.last_search < IDLE_BEFORE_EMBEDDING,
+                    first_pass_only=battery)
             except Exception:
                 log.exception("embedding failed")
                 done = 0
@@ -219,7 +239,7 @@ class Engine:
         reading = self.reader_state.value.decode() or "starting"
         progress = self.content.progress()
         if reading == "up to date" and progress["to_embed"]:
-            reading = "embedding"
+            reading = "waiting for the charger" if on_battery() and not progress["first_pass_left"] else "embedding"
         return {"state": reading, "names": self.names.count(), "model": self.embedder.ready.is_set(), **progress}
 
 
