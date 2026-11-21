@@ -3,8 +3,8 @@
 A search bar for the Mac that looks inside your documents. Press ⌘Space, type what you remember, and read the
 result right there.
 
-I built it because Spotlight kept failing me on PDFs. Searching for an author gave me every paper that cites
-them and not the one they wrote.
+Spotlight treats every word in a PDF the same, so searching for an author returns every paper that cites them
+and buries the one they wrote. Cedar was built to fix that.
 
 ## What it does
 
@@ -25,8 +25,9 @@ You need an Apple Silicon Mac with macOS 14 or later.
 
 1. Download `Cedar-x.y.z.dmg` from [Releases](https://github.com/kallekarlsson1/Cedar/releases/latest).
 2. Open it and drag Cedar to Applications.
-3. Open Cedar. macOS will say it can't verify the app, because I don't have an Apple Developer account. Go to
-   System Settings → Privacy & Security, scroll down and click **Open Anyway**. You do this once per version.
+3. Open Cedar. macOS will say it can't verify the app, because Cedar isn't signed with an Apple Developer
+   certificate. Go to System Settings → Privacy & Security, scroll down and click **Open Anyway**. This is
+   needed once per version.
 4. Turn off Spotlight's shortcut so ⌘Space reaches Cedar: System Settings → Keyboard → Keyboard Shortcuts →
    Spotlight. Or pick a different shortcut in Cedar's settings.
 
