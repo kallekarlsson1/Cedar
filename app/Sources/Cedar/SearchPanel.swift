@@ -62,7 +62,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
     private let panel: Panel
     private let field = NSTextField()
     private let inline = NSTextField(labelWithString: "")   // the answer or top hit, in gray after what you typed
-    private let table = NSTableView()
+    private let table = HoverTable()
     private let scroll = NSScrollView()
     private let detail = DetailView()
     private let divider = NSBox()
@@ -75,17 +75,17 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
     private var bodyHeight: NSLayoutConstraint!
     private var isAnswerOnly = false
 
-    private let width: CGFloat = 820
+    private let width: CGFloat = 1060
     private let barHeight: CGFloat = 60
-    private let listWidth: CGFloat = 330
-    private let bodyFull: CGFloat = 470
+    private let listWidth: CGFloat = 320
+    private let bodyFull: CGFloat = 690
 
     init(engine: EngineClient, apps: Apps, converter: Converter, usage: Usage) {
         self.engine = engine
         self.apps = apps
         self.converter = converter
         self.usage = usage
-        panel = Panel(contentRect: NSRect(x: 0, y: 0, width: 820, height: 60),
+        panel = Panel(contentRect: NSRect(x: 0, y: 0, width: 1060, height: 60),
                       styleMask: [.nonactivatingPanel, .borderless, .fullSizeContentView], backing: .buffered, defer: false)
         super.init()
         build()
@@ -151,6 +151,11 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
         table.delegate = self
         table.target = self
         table.doubleAction = #selector(openSelected)
+        table.onHover = { [weak self] row in
+            guard let self, row >= 0, row < self.items.count, self.items[row].selectable, row != self.table.selectedRow else { return }
+            self.navigated = true
+            self.select(row)
+        }
         table.refusesFirstResponder = true
         scroll.documentView = table
         scroll.drawsBackground = false
@@ -222,7 +227,7 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
     func show() {
         let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
         if let frame = screen?.visibleFrame {
-            let top = frame.maxY - frame.height * 0.2
+            let top = frame.maxY - frame.height * 0.06
             panel.setFrameTopLeftPoint(NSPoint(x: frame.midX - width / 2, y: top))
         }
         resize()
@@ -538,6 +543,24 @@ final class SearchController: NSObject, NSTextFieldDelegate, NSTableViewDataSour
     }
 }
 
+/// A results list that tells when the pointer moves over a row: hovering a result shows it in the reader.
+final class HoverTable: NSTableView {
+    var onHover: ((Int) -> Void)?
+    private var tracking: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        onHover?(row(at: convert(event.locationInWindow, from: nil)))
+    }
+}
+
 /// Thumbnail (or icon), name, and the folder it's in.
 final class ResultCell: NSView {
     private let icon = NSImageView()
@@ -610,7 +633,7 @@ final class ResultCell: NSView {
 /// rest), then what the file is and where it lives.
 final class DetailView: NSView {
     private let previewArea = NSView()
-    private let pageImage = NSImageView()      // a PDF page, drawn with your words highlighted
+    private let reader = PDFView()             // the whole PDF, scrolling, opened at the page that matched
     private let quickLook: QLPreviewView = QLPreviewView(frame: .zero, style: .compact)!
     private let bigIcon = NSImageView()
     private let bigText = NSTextField(wrappingLabelWithString: "")
@@ -622,33 +645,27 @@ final class DetailView: NSView {
 
     init() {
         super.init(frame: .zero)
-        pageImage.imageScaling = .scaleProportionallyUpOrDown
-        // Fit the space; never size the window to the picture.
-        for axis in [NSLayoutConstraint.Orientation.horizontal, .vertical] {
-            pageImage.setContentCompressionResistancePriority(.init(1), for: axis)
-            pageImage.setContentHuggingPriority(.init(1), for: axis)
-        }
-        pageImage.wantsLayer = true
-        pageImage.shadow = {
-            let sh = NSShadow()
-            sh.shadowBlurRadius = 6
-            sh.shadowOffset = NSSize(width: 0, height: -1)
-            sh.shadowColor = NSColor.black.withAlphaComponent(0.35)
-            return sh
-        }()
+        reader.displayMode = .singlePageContinuous
+        reader.autoScales = true                      // a page fills the reader's width
+        reader.displaysPageBreaks = true
+        reader.pageShadowsEnabled = false
+        reader.backgroundColor = NSColor(white: 0.5, alpha: 0.18)
+        reader.wantsLayer = true
+        reader.layer?.cornerRadius = 8
+        reader.layer?.masksToBounds = true
         quickLook.shouldCloseWithWindow = false
         bigIcon.imageScaling = .scaleProportionallyUpOrDown
         bigText.font = .systemFont(ofSize: 30, weight: .medium)
         bigText.alignment = .center
-        for v in [pageImage, quickLook, bigIcon, bigText] as [NSView] {
+        for v in [reader, quickLook, bigIcon, bigText] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             previewArea.addSubview(v)
         }
         NSLayoutConstraint.activate([
-            pageImage.topAnchor.constraint(equalTo: previewArea.topAnchor),
-            pageImage.bottomAnchor.constraint(equalTo: previewArea.bottomAnchor),
-            pageImage.leadingAnchor.constraint(equalTo: previewArea.leadingAnchor),
-            pageImage.trailingAnchor.constraint(equalTo: previewArea.trailingAnchor),
+            reader.topAnchor.constraint(equalTo: previewArea.topAnchor),
+            reader.bottomAnchor.constraint(equalTo: previewArea.bottomAnchor),
+            reader.leadingAnchor.constraint(equalTo: previewArea.leadingAnchor),
+            reader.trailingAnchor.constraint(equalTo: previewArea.trailingAnchor),
             quickLook.topAnchor.constraint(equalTo: previewArea.topAnchor),
             quickLook.bottomAnchor.constraint(equalTo: previewArea.bottomAnchor),
             quickLook.leadingAnchor.constraint(equalTo: previewArea.leadingAnchor),
@@ -663,9 +680,12 @@ final class DetailView: NSView {
         ])
 
         title.font = .systemFont(ofSize: 14, weight: .semibold)
-        title.maximumNumberOfLines = 2
+        title.maximumNumberOfLines = 1
         title.lineBreakMode = .byTruncatingTail
-        facts.maximumNumberOfLines = 6
+        title.cell?.truncatesLastVisibleLine = true
+        facts.maximumNumberOfLines = 1
+        facts.lineBreakMode = .byTruncatingMiddle
+        snippet.isHidden = true
         snippet.maximumNumberOfLines = 4
         snippet.lineBreakMode = .byTruncatingTail
         hint.font = .systemFont(ofSize: 10)
@@ -675,24 +695,23 @@ final class DetailView: NSView {
             addSubview(v)
         }
         NSLayoutConstraint.activate([
-            previewArea.topAnchor.constraint(equalTo: topAnchor, constant: 14),
-            previewArea.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-            previewArea.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-            previewArea.heightAnchor.constraint(equalToConstant: 250),
-            title.topAnchor.constraint(equalTo: previewArea.bottomAnchor, constant: 12),
-            title.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
-            title.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
-            facts.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 8),
+            // The reader takes nearly all of the pane; a caption sits under it.
+            previewArea.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            previewArea.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            previewArea.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            previewArea.bottomAnchor.constraint(equalTo: title.topAnchor, constant: -8),
+            title.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            title.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            title.bottomAnchor.constraint(equalTo: facts.topAnchor, constant: -2),
             facts.leadingAnchor.constraint(equalTo: title.leadingAnchor),
-            facts.trailingAnchor.constraint(equalTo: title.trailingAnchor),
-            snippet.topAnchor.constraint(equalTo: facts.bottomAnchor, constant: 8),
-            snippet.leadingAnchor.constraint(equalTo: title.leadingAnchor),
-            snippet.trailingAnchor.constraint(equalTo: title.trailingAnchor),
-            snippet.bottomAnchor.constraint(lessThanOrEqualTo: hint.topAnchor, constant: -6),
-            hint.leadingAnchor.constraint(equalTo: title.leadingAnchor),
-            hint.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
+            facts.trailingAnchor.constraint(lessThanOrEqualTo: hint.leadingAnchor, constant: -12),
+            facts.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -9),
+            hint.trailingAnchor.constraint(equalTo: title.trailingAnchor),
+            hint.centerYAnchor.constraint(equalTo: facts.centerYAnchor),
         ])
-        for v in [title, facts, snippet] { v.preferredMaxLayoutWidth = 450 }
+        hint.setContentCompressionResistancePriority(.required, for: .horizontal)
+        facts.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        title.preferredMaxLayoutWidth = 0
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -700,7 +719,7 @@ final class DetailView: NSView {
     private enum Mode { case pdf, quickLook, icon, text }
 
     private func use(_ mode: Mode) {
-        pageImage.isHidden = mode != .pdf
+        reader.isHidden = mode != .pdf
         quickLook.isHidden = mode != .quickLook
         bigIcon.isHidden = mode != .icon
         bigText.isHidden = mode != .text
@@ -710,9 +729,7 @@ final class DetailView: NSView {
         isHidden = item == nil
         loading += 1
         guard let item else { return }
-        snippet.attributedStringValue = NSAttributedString()
-        snippet.isHidden = true
-        hint.stringValue = "↩ Open    ⌘↩ Show in Finder    ⌘Y Quick Look    ⌘C Copy"
+        hint.stringValue = "↩ Open   ⌘↩ Finder   ⌘C Copy"
         switch item {
         case .answer(_, let result, _, let note):
             use(.text)
@@ -727,7 +744,7 @@ final class DetailView: NSView {
             let version = Bundle(url: app.url)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
             facts.attributedStringValue = Self.facts([("Kind", "Application"), ("Version", version ?? "–"),
                                                       ("Where", Paths.short(app.url.path))])
-            hint.stringValue = "↩ Open    ⌘↩ Show in Finder"
+            hint.stringValue = "↩ Open   ⌘↩ Finder"
         case .doc(let d):
             title.stringValue = d.title ?? (d.path as NSString).lastPathComponent
             var rows = Self.fileFacts(d.path)
@@ -737,10 +754,7 @@ final class DetailView: NSView {
                 showPDF(d.path, page: d.page, query: query)
             } else {
                 showQuickLook(d.path)
-                if let s = d.snippet {
-                    snippet.attributedStringValue = Self.highlight(s)
-                    snippet.isHidden = false
-                }
+
             }
         case .file(let f):
             title.stringValue = f.name
@@ -757,63 +771,56 @@ final class DetailView: NSView {
         quickLook.previewItem = URL(fileURLWithPath: path) as NSURL
     }
 
-    /// The page that matched, drawn with the words you typed highlighted.
-    private var document: (path: String, doc: PDFDocument)?
-    private let renderQueue = DispatchQueue(label: "cedar.pdf", qos: .userInitiated)
+    /// The document in the reader, scrolled to the page that matched, with the words you typed marked on it.
+    private var shownPath: String?
+    private let loadQueue = DispatchQueue(label: "cedar.pdf", qos: .userInitiated)
 
     private func showPDF(_ path: String, page: Int?, query: String) {
         use(.pdf)
-        pageImage.image = nil
         let token = loading
         let words = query.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber })
             .map(String.init).filter { $0.count >= 3 }
-        let cached = document?.path == path ? document?.doc : nil
-        renderQueue.async {
-            guard let doc = cached ?? PDFDocument(url: URL(fileURLWithPath: path)) else { return }
-            let image = Self.render(doc, page: page, words: words)
+        if shownPath == path, reader.document != nil {
+            go(to: page, words: words)
+            return
+        }
+        reader.document = nil
+        shownPath = nil
+        loadQueue.async {
+            guard let doc = PDFDocument(url: URL(fileURLWithPath: path)) else { return }
             DispatchQueue.main.async {
-                self.document = (path, doc)
                 guard token == self.loading else { return }
-                self.pageImage.image = image
+                self.reader.document = doc
+                self.shownPath = path
+                self.reader.autoScales = true
+                DispatchQueue.main.async { self.go(to: page, words: words) }     // after the pages are laid out
             }
         }
     }
 
-    private static func render(_ doc: PDFDocument, page: Int?, words: [String]) -> NSImage? {
+    private func go(to page: Int?, words: [String]) {
+        guard let doc = reader.document, doc.pageCount > 0 else { return }
         let index = max(0, min((page ?? 1) - 1, doc.pageCount - 1))
-        guard let pdfPage = doc.page(at: index) else { return nil }
+        guard let pdfPage = doc.page(at: index) else { return }
         let box = pdfPage.bounds(for: .cropBox)
-        guard box.width > 0, box.height > 0 else { return nil }
-        let scale = 900 / max(box.width, box.height)
-        let size = NSSize(width: box.width * scale, height: box.height * scale)
-        let thumb = pdfPage.thumbnail(of: size, for: .cropBox)
-
-        // Where the words are on the page, in the image's coordinates.
-        var rects: [NSRect] = []
-        if pdfPage.rotation == 0, let text = pdfPage.string as NSString? {
+        reader.go(to: PDFDestination(page: pdfPage, at: NSPoint(x: box.minX, y: box.maxY)))
+        var marks: [PDFSelection] = []
+        if let text = pdfPage.string as NSString? {
             for word in words {
                 var range = NSRange(location: 0, length: text.length)
-                while rects.count < 80 {
+                while marks.count < 80 {
                     let found = text.range(of: word, options: [.caseInsensitive, .diacriticInsensitive], range: range)
                     if found.location == NSNotFound { break }
-                    if let r = pdfPage.selection(for: found)?.bounds(for: pdfPage), !r.isEmpty {
-                        rects.append(NSRect(x: (r.minX - box.minX) * scale - 1, y: (r.minY - box.minY) * scale - 1,
-                                            width: r.width * scale + 2, height: r.height * scale + 2))
+                    if let sel = pdfPage.selection(for: found) {
+                        sel.color = NSColor.systemYellow.withAlphaComponent(0.55)
+                        marks.append(sel)
                     }
                     let next = found.location + found.length
                     range = NSRange(location: next, length: text.length - next)
                 }
             }
         }
-        let out = NSImage(size: size)
-        out.lockFocus()
-        NSColor.white.setFill()
-        NSRect(origin: .zero, size: size).fill()
-        thumb.draw(in: NSRect(origin: .zero, size: size))
-        NSColor.systemYellow.withAlphaComponent(0.45).setFill()
-        for r in rects { NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2).fill() }
-        out.unlockFocus()
-        return out
+        reader.highlightedSelections = marks.isEmpty ? nil : marks
     }
 
     private static func fileFacts(_ path: String) -> [(String, String)] {
@@ -835,22 +842,10 @@ final class DetailView: NSView {
         return rows
     }
 
-    /// "Kind   PDF document" lines, labels in gray.
+    /// One line under the reader: "PDF document · page 3 of 12 · 4,4 MB · Today 14:02 · ~/Papers".
     private static func facts(_ rows: [(String, String)]) -> NSAttributedString {
-        let out = NSMutableAttributedString()
-        let style = NSMutableParagraphStyle()
-        style.tabStops = [NSTextTab(textAlignment: .left, location: 72)]
-        style.headIndent = 72
-        style.lineSpacing = 2
-        let label: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11),
-                                                    .foregroundColor: NSColor.tertiaryLabelColor, .paragraphStyle: style]
-        let value: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11),
-                                                    .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: style]
-        for (i, (k, v)) in rows.enumerated() {
-            out.append(NSAttributedString(string: k + "\t", attributes: label))
-            out.append(NSAttributedString(string: v + (i < rows.count - 1 ? "\n" : ""), attributes: value))
-        }
-        return out
+        NSAttributedString(string: rows.map(\.1).joined(separator: "  ·  "),
+                           attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor])
     }
 
     /// «matched words» in bold.
