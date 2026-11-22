@@ -119,7 +119,19 @@ enum Markdown {
             out.append(inline(text, font: body, style: paragraph(spacing: 8)))
         }
 
-        // Highlight the query words.
+        mark(words, in: out)
+        return out
+    }
+
+    /// Plain text, shown as written.
+    static func plain(_ source: String, monospaced: Bool, highlight words: [String]) -> NSAttributedString {
+        let out = NSMutableAttributedString(string: source.replacingOccurrences(of: "\r\n", with: "\n"), attributes: [
+            .font: monospaced ? mono : body, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph(spacing: 2)])
+        mark(words, in: out)
+        return out
+    }
+
+    private static func mark(_ words: [String], in out: NSMutableAttributedString) {
         let plain = out.string as NSString
         for word in words where word.count >= 3 {
             var range = NSRange(location: 0, length: plain.length)
@@ -131,7 +143,6 @@ enum Markdown {
                 range = NSRange(location: next, length: plain.length - next)
             }
         }
-        return out
     }
 
     private static func paragraph(spacing: CGFloat, before: CGFloat = 0, indent: CGFloat = 0, firstIndent: CGFloat? = nil) -> NSMutableParagraphStyle {

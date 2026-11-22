@@ -892,17 +892,24 @@ final class DetailView: NSView {
     }
 
     private func showQuickLook(_ path: String) {
-        if ["md", "markdown"].contains((path as NSString).pathExtension.lowercased()), showNote(path) { return }
+        let kind = (path as NSString).pathExtension.lowercased()
+        if (["md", "markdown"] + Self.plainText).contains(kind), showNote(path) { return }
         use(.quickLook)
         quickLook.previewItem = URL(fileURLWithPath: path) as NSURL
     }
 
-    /// Shows a Markdown file, scrolled to the first highlighted word.
+    private static let plainText = ["txt", "text", "log", "csv", "tex", "rst", "org"]
+
+    /// Shows a Markdown or plain text file, scrolled to the first highlighted word.
     private var lastQuery = ""
     private func showNote(_ path: String, keepPosition: Bool = false) -> Bool {
         guard let data = FileManager.default.contents(atPath: path), data.count < 3_000_000 else { return false }
         let words = lastQuery.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
-        let text = Markdown.render(String(decoding: data, as: UTF8.self), highlight: words)
+        let kind = (path as NSString).pathExtension.lowercased()
+        let source = String(decoding: data, as: UTF8.self)
+        let text = Self.plainText.contains(kind)
+            ? Markdown.plain(source, monospaced: ["log", "csv"].contains(kind), highlight: words)
+            : Markdown.render(source, highlight: words)
         use(.note)
         notePath = path
         let visible = noteScroll.contentView.bounds.origin.y / max(noteText.frame.height, 1)
